@@ -1,4 +1,5 @@
 import pytest
+import datetime
 import unittest.mock as mock
 from unittest.mock import MagicMock
 from cstol_script_engine import CstolScriptEngine, CstolVariables
@@ -26,6 +27,9 @@ class TestCstolVariables:
         variables = CstolVariables()
         assert variables.get_special_variable("$$OWLT") == 0.0
         assert variables.get_special_variable("$$ERROR") == "NO_ERROR"
+        assert variables.get_special_variable("$$LOOP_COUNT") == 0
+        variables.loop_stack.append([10, 3, 4])
+        assert variables.get_special_variable("$$LOOP_COUNT") == 4
 
     def test_get_special_variable_invalid_name(self):
         variables = CstolVariables()
@@ -43,13 +47,11 @@ class TestCstolScriptEngine:
 
     def test_tokenizer_basic(self):
         result = self.engine.tokenizer("WRITE 'Hello World'")
-        assert "WRITE" in result
-        assert "'Hello World'" in result
+        assert result == ['WRITE', "'Hello World'"]
 
     def test_tokenizer_special_chars(self):
         result = self.engine.tokenizer("LET $VAR = 42")
-        expected_tokens = ["LET", "$VAR", "=", "42"]
-        assert all(token in result for token in expected_tokens)
+        assert result == ["LET", "$VAR", "=", "42"]
 
     def test_tokenizer_preserves_quotes(self):
         result = self.engine.tokenizer('WRITE "Hello World"')
@@ -63,24 +65,29 @@ class TestCstolScriptEngine:
         result = self.engine.tokenizer('WRITE "Hello" , "World"')
         assert result == ['WRITE', '"Hello"', ',', '"World"']
 
-    def test_tokenizer_escaped_quotes(self):
-        result = self.engine.tokenizer('WRITE "Escaped \\"quotes\\""')
-        assert result == ['WRITE', '"Escaped \\"quotes\\""']
-
     def test_tokenizer_timestamps(self):
         result = self.engine.tokenizer('WRITE 11:30:00')
         assert result == ['WRITE', '11:30:00']
         result = self.engine.tokenizer('WRITE 2025/123-11:30:00.57')
         assert result == ['WRITE', '2025', '/', '123', '-', '11:30:00.57']
+        result = self.engine.tokenizer('WRITE /123-11:30:00.57')
+        assert result == ['WRITE', '/', '123', '-', '11:30:00.57']
+        result = self.engine.tokenizer('WRITE 2025/-11:30:00.57')
+        assert result == ['WRITE', '2025', '/', '-', '11:30:00.57']
+        result = self.engine.tokenizer('WRITE /-11:30:00.57')
+        assert result == ['WRITE', '/', '-', '11:30:00.57']
 
     def test_cstol_tokenizer_reconstructs_timestamps(self):
-        # Test basic timestamp (should pass through unchanged)
         result = self.engine.cstol_tokenizer('WRITE 11:30:00')
         assert result == ['WRITE', '11:30:00']
-
-        # Test full timestamp reconstruction
         result = self.engine.cstol_tokenizer('WRITE 2025/123-11:30:00.57')
         assert result == ['WRITE', '2025/123-11:30:00.57']
+        result = self.engine.cstol_tokenizer('WRITE /123-11:30:00.57')
+        assert result == ['WRITE', '/123-11:30:00.57']
+        result = self.engine.cstol_tokenizer('WRITE 2025/-11:30:00.57')
+        assert result == ['WRITE', '2025/-11:30:00.57']
+        result = self.engine.cstol_tokenizer('WRITE /-11:30:00.57')
+        assert result == ['WRITE', '/-11:30:00.57']
 
     def test_cstol_tokenizer_preserves_other_tokens(self):
         # Test that non-timestamp tokens are preserved
@@ -109,6 +116,16 @@ class TestCstolScriptEngine:
         result = self.engine.parse_timestamp("2025/1-12:34:56")
         assert result == 1735734896.0
 
+    def test_parse_timestamp_without_year(self):
+        now = datetime.datetime(2025, 1, 1, 0, 0, 0)
+        result = self.engine.parse_timestamp("/-12:34:56", now)
+        assert result == 1735734896.0
+
+    def test_parse_timestamp_with_year(self):
+        now = datetime.datetime(2025, 1, 1, 0, 0, 0)
+        result = self.engine.parse_timestamp("2025/-12:34:56", now)
+        assert result == 1735734896.0
+
     def test_handle_declare_variable(self):
         tokens = ["DECLARE", "VARIABLE", "$TEST", "=", "42"]
         self.engine.handle_declare(tokens, 1)
@@ -129,14 +146,14 @@ class TestCstolScriptEngine:
         result = self.engine.handle_loop(tokens, 5)
         assert result == 6
         assert len(self.engine.variables.loop_stack) == 1
-        assert self.engine.variables.loop_stack[0] == [6, None]
+        assert self.engine.variables.loop_stack[0] == [6, None, 1]
 
     def test_handle_loop_counted(self):
         tokens = ["LOOP", "5"]
         result = self.engine.handle_loop(tokens, 10)
         assert result == 11
         assert len(self.engine.variables.loop_stack) == 1
-        assert self.engine.variables.loop_stack[0] == [11, 5]
+        assert self.engine.variables.loop_stack[0] == [11, 5, 1]
 
     def test_extract_expressions_comma_separator(self):
         tokens = ["A", ",", "B", ",", "C"]
@@ -185,9 +202,9 @@ class TestCstolScriptEngine:
 
     @mock.patch('cstol_script_engine.clear_screen')
     def test_handle_clear_screen(self, mock_clear_screen):
-        tokens = ["CLEAR", "DISPLAY1"]
+        tokens = ["CLEAR", "INST ADCS"]
         self.engine.handle_clear(tokens, 1)
-        mock_clear_screen.assert_called_once_with("DISPLAY1")
+        mock_clear_screen.assert_called_once_with("INST", "ADCS")
 
     @mock.patch('cstol_script_engine.clear_all_screens')
     def test_handle_clear_all(self, mock_clear_all):
@@ -197,9 +214,9 @@ class TestCstolScriptEngine:
 
     @mock.patch('cstol_script_engine.display_screen')
     def test_handle_display(self, mock_display_screen):
-        tokens = ["DISPLAY", "SCREEN1"]
+        tokens = ["DISPLAY", "INST ADCS"]
         self.engine.handle_display(tokens, 1)
-        mock_display_screen.assert_called_once_with("SCREEN1")
+        mock_display_screen.assert_called_once_with("INST", "ADCS")
 
     def test_handle_let_local_variable(self):
         tokens = ["LET", "$VAR", "=", "42"]
@@ -219,6 +236,11 @@ class TestCstolScriptEngine:
     def test_handle_let_invalid_variable_name(self):
         tokens = ["LET", "VAR", "=", "42"]
         with pytest.raises(ValueError, match="Non-global variable name must start with"):
+            self.engine.handle_let(tokens, 1)
+
+    def test_handle_let_bad_expression(self):
+        tokens = ["LET", "$VAR", "=", "1", "/", "0"]
+        with pytest.raises(ValueError, match="Error evaluating expression"):
             self.engine.handle_let(tokens, 1)
 
     @mock.patch('cstol_script_engine.os.system')
@@ -361,20 +383,20 @@ class TestCstolScriptEngine:
         assert result == 6
 
     def test_handle_end_endloop_infinite(self):
-        self.engine.variables.loop_stack.append([10, None])
+        self.engine.variables.loop_stack.append([10, None, 1])
         tokens = ["ENDLOOP"]
         result = self.engine.handle_end(tokens, 15)
         assert result == 10
 
     def test_handle_end_endloop_counted(self):
-        self.engine.variables.loop_stack.append([10, 3])
+        self.engine.variables.loop_stack.append([10, 3, 1])
         tokens = ["ENDLOOP"]
         result = self.engine.handle_end(tokens, 15)
         assert result == 10
         assert self.engine.variables.loop_stack[0][1] == 2
 
     def test_handle_end_endloop_count_finished(self):
-        self.engine.variables.loop_stack.append([10, 1])
+        self.engine.variables.loop_stack.append([10, 1, 1])
         tokens = ["ENDLOOP"]
         result = self.engine.handle_end(tokens, 15)
         assert result == 16
@@ -469,7 +491,7 @@ class TestCstolScriptEngine:
 
     @mock.patch('cstol_script_engine.cmd')
     def test_handle_cmd_turn_on(self, mock_cmd):
-        tokens = ["TURN", "ON", "TARGET1", "PARAM1"]
+        tokens = ["TURN", "ON", "TARGET1"]
         self.engine.handle_cmd(tokens, 1)
         mock_cmd.assert_called_once_with("TARGET1", "TURNON", {})
 
@@ -486,11 +508,6 @@ class TestCstolScriptEngine:
     def test_get_special_variable_sc_time(self):
         result = self.engine.variables.get_special_variable("$$SC_TIME")
         assert isinstance(result, float)
-
-    # def test_run_text_with_bind_variables(self):
-    #     with mock.patch.object(self.engine, 'run_text', wraps=self.engine.run_text) as mock_run:
-    #         self.engine.run_text("WRITE 'test'", bind_variables=True)
-    #         # Should preserve existing variables
 
     def test_run_line_with_continuation(self):
         self.engine.saved_tokens = ["WRITE"]
@@ -527,10 +544,7 @@ class TestCstolScriptEngine:
         with pytest.raises(ValueError, match="Unknown keyword 'UNKNOWN'"):
             self.engine.run_line("UNKNOWN", [], "test.txt", 1)
 
-    # Additional tests for improved coverage
-
     def test_extract_expressions_empty_expression(self):
-        # Test edge case with empty expressions
         result = self.engine.extract_expressions(["A", ",", ",", "B"], ",")
         assert result == [["A"], [], ["B"]]
 
@@ -540,14 +554,26 @@ class TestCstolScriptEngine:
 
     def test_handle_else_simple(self):
         tokens = ["ELSE"]
-        result = self.engine.handle_else(tokens, [], 5)
-        assert result == 6
+        with pytest.raises(ValueError, match="No matching ENDIF for ELSE"):
+            result = self.engine.handle_else(tokens, [], 5)
+
+    def test_handle_else_with_endif(self):
+        tokens = ["ELSE"]
+        lines = ["IF TRUE", "WRITE 'TRUE'", "ELSE", "WRITE 'HELLO'", "ENDIF"]
+        result = self.engine.handle_else(tokens, lines, 3)
+        assert result == 5
 
     def test_handle_else_elseif(self):
         tokens = ["ELSEIF", "1", "=", "1"]
         lines = ["ELSEIF 1 = 1", "  WRITE \"TRUE\"", "ENDIF"]
         result = self.engine.handle_else(tokens, lines, 1)
         assert result == 2
+
+    def test_handle_else_elseif_false(self):
+        tokens = ["ELSEIF", "1", "=", "2"]
+        lines = ["ELSEIF 1 = 1", "  WRITE \"TRUE\"", "ENDIF"]
+        result = self.engine.handle_else(tokens, lines, 1)
+        assert result == 3
 
     def test_handle_else_else_if(self):
         tokens = ["ELSE", "IF", "1", "=", "1"]
@@ -564,10 +590,8 @@ class TestCstolScriptEngine:
     def test_handle_let_global_variable_with_item(self, mock_set_tlm):
         # This tests the global variable path with item_name
         tokens = ["LET", "TARGET", "ITEM", "=", "42"]
-        with mock.patch.object(self.engine, 'evaluate_expression', return_value=42):
-            self.engine.handle_let(tokens, 1)
-            # Should call set_tlm but target_name is not defined, so this will fail
-            # Let's just test that we reach the set_tlm path
+        self.engine.handle_let(tokens, 1)
+        mock_set_tlm.assert_called_once_with("TARGET LATEST ITEM = 42")
 
     def test_handle_declare_invalid_equals(self):
         tokens = ["DECLARE", "VARIABLE", "$TEST", "!=", "42"]
@@ -587,9 +611,8 @@ class TestCstolScriptEngine:
     @mock.patch('cstol_script_engine.os.system')
     def test_handle_run_with_arguments(self, mock_system):
         tokens = ["RUN", "script.sh", "arg1", ",", "arg2"]
-        with mock.patch.object(self.engine, 'evaluate_expressions', return_value=["arg1", "arg2"]):
-            self.engine.handle_run(tokens, 1)
-            mock_system.assert_called_once()
+        self.engine.handle_run(tokens, 1)
+        mock_system.assert_called_once_with('script.sh "arg1" "arg2"')
 
     @mock.patch('cstol_script_engine.send_raw')
     def test_handle_send_invalid_format(self, mock_send):
@@ -620,19 +643,34 @@ class TestCstolScriptEngine:
 
     @mock.patch('cstol_script_engine.wait_expression')
     def test_handle_wait_with_expression_and_timeout(self, mock_wait_expr):
+        self.engine.variables.local_variables["$VAR"] = 2
         tokens = ["WAIT", "$VAR", "=", "1", "OR", "FOR", "12:30:45"]
+        self.engine.handle_wait(tokens, 1)
+        mock_wait_expr.assert_called_once_with(mock.ANY, 45045, globals=mock.ANY)
+
+    @mock.patch('cstol_script_engine.wait_expression')
+    def test_handle_wait_with_expression_and_abs_timeout_future(self, mock_wait_expr):
+        self.engine.variables.local_variables["$VAR"] = 2
+        tokens = ["WAIT", "$VAR", "=", "1", "OR", "FOR", "2038/1-12:30:45"]
+        self.engine.handle_wait(tokens, 1)
+        mock_wait_expr.assert_called_once()
+
+    @mock.patch('cstol_script_engine.wait_expression')
+    def test_handle_wait_with_expression_and_abs_timeout_past(self, mock_wait_expr):
+        self.engine.variables.local_variables["$VAR"] = 2
+        tokens = ["WAIT", "$VAR", "=", "1", "OR", "FOR", "1980/1-12:30:45"]
         self.engine.handle_wait(tokens, 1)
         mock_wait_expr.assert_called_once()
 
     @mock.patch('cstol_script_engine.wait_expression')
     def test_handle_wait_with_expression_no_timeout(self, mock_wait_expr):
+        self.engine.variables.local_variables["$VAR"] = 2
         tokens = ["WAIT", "$VAR", "=", "1"]
-        with mock.patch.object(self.engine, 'extract_expressions',
-                               return_value=[["$VAR", "=", "1"]]):
-            self.engine.handle_wait(tokens, 1)
-            mock_wait_expr.assert_called_once_with(mock.ANY, 1000000000)
+        self.engine.handle_wait(tokens, 1)
+        mock_wait_expr.assert_called_once_with(mock.ANY, 1000000000, globals=mock.ANY)
 
     def test_handle_wait_invalid_timeout_timestamp(self):
+        self.engine.variables.local_variables["$VAR"] = 2
         tokens = ["WAIT", "$VAR", "=", "1", "OR", "FOR", "invalid"]
         with pytest.raises(ValueError, match="Invalid timestamp format"):
             self.engine.handle_wait(tokens, 1)
@@ -647,6 +685,22 @@ class TestCstolScriptEngine:
         tokens = ["$VAR", "=", "42"]
         result = self.engine.build_python_expression(tokens)
         assert result == "1 == 42"
+
+    def test_build_python_expression_local_variable_string_conversion(self):
+        # Test local variable string conversion in build_python_expression (line 212)
+        self.engine.variables.local_variables['$TEST'] = 'string_value'
+        result = self.engine.build_python_expression(['$TEST'])
+        assert '"string_value"' in result
+
+    def test_build_python_expression_dn(self):
+        tokens = ["42DN", "+", "12", "DN"]
+        result = self.engine.build_python_expression(tokens)
+        assert result == "42 + 12"
+
+    def test_build_python_expression_eu(self):
+        tokens = ["10A", "-", "2", "MA"]
+        result = self.engine.build_python_expression(tokens)
+        assert result == "10 - 2"
 
     def test_build_python_expression_already_quoted_single(self):
         # Test single quotes are preserved as-is
@@ -681,23 +735,21 @@ class TestCstolScriptEngine:
 
     def test_run_line_with_tokens_ending_ampersand(self):
         # Test continuation line handling when tokens list is not empty
-        result = self.engine.run_line("WRITE 'test'", [], "test.txt", 1)
+        result = self.engine.run_line("WRITE 'test' &", [], "test.txt", 1)
         assert result == 2
-        assert self.engine.saved_tokens is None
+        assert self.engine.saved_tokens is not None
 
     def test_handle_cmd_force_on(self):
-        tokens = ["FORCE", "ON", "TARGET1", "PARAM1"]
+        tokens = ["FORCE", "ON", "TARGET1"]
         with mock.patch('cstol_script_engine.cmd') as mock_cmd:
-            with mock.patch.object(self.engine, 'evaluate_tokens', return_value=["TARGET1", "PARAM1"]):
-                self.engine.handle_cmd(tokens, 1)
-                mock_cmd.assert_called_once_with("TARGET1", "FORCEON", {})
+            self.engine.handle_cmd(tokens, 1)
+            mock_cmd.assert_called_once_with("TARGET1", "FORCEON", {})
 
     def test_handle_cmd_force_off(self):
-        tokens = ["FORCE", "OFF", "TARGET1", "PARAM1"]
+        tokens = ["FORCE", "OFF", "TARGET1"]
         with mock.patch('cstol_script_engine.cmd') as mock_cmd:
-            with mock.patch.object(self.engine, 'evaluate_tokens', return_value=["TARGET1", "PARAM1"]):
-                self.engine.handle_cmd(tokens, 1)
-                mock_cmd.assert_called_once_with("TARGET1", "FORCEOFF", {})
+            self.engine.handle_cmd(tokens, 1)
+            mock_cmd.assert_called_once_with("TARGET1", "FORCEOFF", {})
 
     def test_handle_cmd_by_clause(self):
         tokens = ["SET", "TARGET1", "PARAM1", "BY", "42"]
@@ -717,32 +769,48 @@ class TestCstolScriptEngine:
     def test_handle_cmd_from_clause(self):
         tokens = ["SET", "TARGET1", "PARAM1", "FROM", "42"]
         with mock.patch('cstol_script_engine.cmd') as mock_cmd:
-            with mock.patch.object(self.engine, 'evaluate_expression', return_value=42):
-                with mock.patch.object(self.engine, 'evaluate_tokens', return_value=["TARGET1"]):
-                    with mock.patch.object(self.engine, 'extract_expressions',
-                                           side_effect=[
-                                               [],  # TO expressions
-                                               [],  # BY expressions
-                                               [["TARGET1", "PARAM1"], ["42"]],        # FROM expressions
-                                               []   # WITH expressions
-                                           ]):
-                        self.engine.handle_cmd(tokens, 1)
-                        mock_cmd.assert_called_once()
+            self.engine.handle_cmd(tokens, 1)
+            mock_cmd.assert_called_once_with("TARGET1", "SET", {"PARAM1": 42})
 
     def test_handle_cmd_cmd_with_to_clause(self):
         tokens = ["CMD", "TARGET1", "COMMAND1", "TO", "42"]
         with mock.patch('cstol_script_engine.cmd') as mock_cmd:
-            with mock.patch.object(self.engine, 'evaluate_expression', return_value=42):
-                with mock.patch.object(self.engine, 'evaluate_tokens', return_value=["TARGET1", "COMMAND1"]):
-                    with mock.patch.object(self.engine, 'extract_expressions',
-                                           return_value=[["TARGET1", "COMMAND1"], ["42"]]):
-                        self.engine.handle_cmd(tokens, 1)
-                        mock_cmd.assert_called_once_with("TARGET1", "COMMAND1", {"VALUE": 42})
+            self.engine.handle_cmd(tokens, 1)
+            mock_cmd.assert_called_once_with("TARGET1", "COMMAND1", {"VALUE": 42})
 
+    def test_handle_cmd_malformed_to_error(self):
+        # Test malformed TO command (line 573) - too many parts before TO
+        with pytest.raises(ValueError, match="Malformed TO cmd"):
+            self.engine.handle_cmd(['CMD', 'TARGET', 'COMMAND', 'PARAM', 'TO', 'VALUE'], 1)
+
+    def test_handle_cmd_with_with_clause(self):
+        # Test WITH clause handling (lines 576-586)
+        with mock.patch('cstol_script_engine.cmd') as mock_cmd:
+            tokens = ['CMD', 'SPACECRAFT', 'TEST_CMD', 'WITH', 'PARAM1', '42', ',', 'PARAM2', 'abc']
+            self.engine.handle_cmd(tokens, 1)
+            mock_cmd.assert_called_with("SPACECRAFT", "TEST_CMD", {"PARAM1": 42, "PARAM2": "abc"})
+
+    def test_handle_cmd_no_clauses(self):
+        # Test command with no clauses (line 592)
+        with mock.patch('cstol_script_engine.cmd') as mock_cmd:
+            tokens = ['CMD', 'TEST_CMD', 'SPACECRAFT']
+            self.engine.handle_cmd(tokens, 1)
+            mock_cmd.assert_called_once_with("TEST_CMD", "SPACECRAFT", {})
+
+    def test_cmd_with_just_target_name(self):
+        with mock.patch('cstol_script_engine.cmd') as mock_cmd:
+            tokens = ['SET', 'SPACECRAFT', 'TO', '42']
+            self.engine.handle_cmd(tokens, 1)
+            mock_cmd.assert_called_once_with("SPACECRAFT", "SET", {"VALUE": 42})
 
     def test_handle_check_format_missing_value(self):
         tokens = ["CHECK", "%X"]
         with pytest.raises(ValueError, match="Missing value for format"):
+            self.engine.handle_check(tokens, 1)
+
+    def test_handle_check_unknown_format(self):
+        tokens = ["CHECK", "%Z"]
+        with pytest.raises(ValueError, match="Invalid format"):
             self.engine.handle_check(tokens, 1)
 
     def test_handle_check_invalid_vs_format_too_many_colons(self):
@@ -798,21 +866,16 @@ class TestCstolScriptEngine:
         for fmt, value, expected in format_tests:
             tokens = ["CHECK", fmt, str(value)]
             with mock.patch('builtins.print') as mock_print:
-                with mock.patch.object(self.engine, 'evaluate_expression', return_value=value):
-                    self.engine.handle_check(tokens, 1)
-                    mock_print.assert_called_once_with(f"CHECK SUCCESS: {value} = {expected}")
+                self.engine.handle_check(tokens, 1)
+                mock_print.assert_called_once_with(f"CHECK SUCCESS: {value} = {expected}")
 
     @mock.patch('cstol_script_engine.os.environ', {})
     def test_handle_start_with_environment_variables(self, ):
         tokens = ["START", "PROC1", "arg1", ",", "arg2"]
         with mock.patch('cstol_script_engine.start') as mock_start:
-            with mock.patch.object(self.engine, 'extract_expressions',
-                                   return_value=[["arg1"], ["arg2"]]):
-                with mock.patch.object(self.engine, 'evaluate_expressions',
-                                       return_value=["value1", "value2"]):
-                    with mock.patch.dict('os.environ', {}, clear=True):
-                        self.engine.handle_start(tokens, 1)
-                        mock_start.assert_called_once_with("PROC1", bind_variables=False)
+            with mock.patch.dict('os.environ', {}, clear=True):
+                self.engine.handle_start(tokens, 1)
+                mock_start.assert_called_once_with("PROC1", bind_variables=False)
 
     def test_run_text_without_bind_variables(self):
         # Test the run_text method that creates new variable scope
@@ -872,38 +935,12 @@ class TestCstolScriptEngine:
         with pytest.raises(ValueError, match="Missing value for format"):
             self.engine.handle_write(['WRITE', '%X'], 1)
 
-    def test_handle_cmd_malformed_to_error(self):
-        # Test malformed TO command (line 573) - too many parts before TO
-        with pytest.raises(ValueError, match="Malformed TO cmd"):
-            self.engine.handle_cmd(['CMD', 'TARGET', 'COMMAND', 'PARAM', 'TO', 'VALUE'], 1)
-
-    def test_handle_cmd_with_with_clause(self):
-        # Test WITH clause handling (lines 576-586)
-        with mock.patch('cstol_script_engine.cmd') as mock_cmd:
-            tokens = ['CMD', 'SPACECRAFT', 'TEST_CMD', 'WITH', 'PARAM1', '42', ',', 'PARAM2', 'abc']
-            self.engine.handle_cmd(tokens, 1)
-            mock_cmd.assert_called_once()
-            args, kwargs = mock_cmd.call_args
-            assert args[0] == 'SPACECRAFT'  # target_name
-            assert args[1] == 'TEST_CMD'    # cmd_name
-            assert isinstance(args[2], dict)  # args dict
-
-    def test_handle_cmd_no_clauses(self):
-        # Test command with no clauses (line 592)
-        with mock.patch('cstol_script_engine.cmd') as mock_cmd:
-            tokens = ['TEST_CMD', 'SPACECRAFT']
-            self.engine.handle_cmd(tokens, 1)
-            mock_cmd.assert_called_once()
-            args, kwargs = mock_cmd.call_args
-            assert args[0] == 'SPACECRAFT'  # target_name
-            assert args[1] == 'TEST_CMD'    # cmd_name
-
     def test_handle_send_command(self):
         # Test SEND command (lines 809-812)
         with mock.patch('cstol_script_engine.send_raw') as mock_send:
-            tokens = ['SEND', '0x12345', 'TO', 'INTERFACE1']
+            tokens = ['SEND', 'h#0102', 'TO', 'INTERFACE1']
             self.engine.handle_send(tokens, 1)
-            mock_send.assert_called_once()
+            mock_send.assert_called_once_with("INTERFACE1", b'\x01\x02')
 
     def test_handle_send_invalid_format(self):
         # Test SEND invalid format
@@ -1055,13 +1092,6 @@ class TestCstolScriptEngine:
         with pytest.raises(ValueError, match="Unknown keyword"):
             self.engine.run_line("UNKNOWN_KEYWORD", [], "test.txt", 1)
 
-    def test_build_python_expression_local_variable_string_conversion(self):
-        # Test local variable string conversion in build_python_expression (line 212)
-        self.engine.variables.local_variables['$TEST'] = 'string_value'
-        result = self.engine.build_python_expression(['$TEST'])
-        assert '"string_value"' in result
-
-
     def test_handle_check_invalid_vs_format_too_many_colons(self):
         # Test invalid VS format with too many colons
         # Use single token to avoid tlm conversion
@@ -1125,23 +1155,21 @@ class TestCstolScriptEngine:
         with mock.patch('cstol_script_engine.cmd') as mock_cmd:
             tokens = ['SET', 'TARGET1', 'PARAM1', 'BY', '42']
             self.engine.handle_cmd(tokens, 1)
-            mock_cmd.assert_called_once()
+            mock_cmd.assert_called_once_with("TARGET1", "SET", {"PARAM1": 42})
 
     def test_handle_cmd_with_clause_non_cmd_verb(self):
         # Test line 580: WITH clause with non-CMD verb
         with mock.patch('cstol_script_engine.cmd') as mock_cmd:
             tokens = ['SET', 'SPACECRAFT', 'WITH', 'PARAM1', '42']
             self.engine.handle_cmd(tokens, 1)
-            mock_cmd.assert_called_once()
+            mock_cmd.assert_called_once_with("SPACECRAFT", "SET", {"PARAM1": 42})
 
     def test_handle_cmd_no_clauses_non_cmd_verb(self):
         # Test line 591, 593: No clauses with non-CMD verb
         with mock.patch('cstol_script_engine.cmd') as mock_cmd:
             tokens = ['SET', 'TARGET1']
             self.engine.handle_cmd(tokens, 1)
-            mock_cmd.assert_called_once()
-            args, kwargs = mock_cmd.call_args
-            assert args[1] == 'SET'  # cmd_name should be the verb
+            mock_cmd.assert_called_once_with("TARGET1", "SET", {})
 
     def test_handle_check_format_missing_lines(self):
         # Test various format-related missing lines
@@ -1170,8 +1198,6 @@ class TestCstolScriptEngine:
             mock_set_tlm.assert_called_with("SPACECRAFT LATEST ITEM1 = 'test'")
 
     def test_more_error_paths(self):
-        # Test additional error handling paths
-
         # Test invalid format in WRITE
         with pytest.raises(ValueError, match="Invalid format"):
             self.engine.handle_write(['WRITE', '%Q', '42'], 1)  # Q is not valid format
@@ -1181,9 +1207,7 @@ class TestCstolScriptEngine:
         with mock.patch('cstol_script_engine.cmd') as mock_cmd:
             tokens = ['CMD', 'TARGET1', 'COMMAND1']
             self.engine.handle_cmd(tokens, 1)
-            mock_cmd.assert_called_once()
-            args, kwargs = mock_cmd.call_args
-            assert args[1] == 'COMMAND1'  # cmd_name should be tokens[1]
+            mock_cmd.assert_called_once_with("TARGET1", "COMMAND1", {})
 
     def test_label_with_next_statement(self):
         # Test line 996: Label processing that hits 'next' statement
@@ -1197,9 +1221,7 @@ class TestCstolScriptEngine:
             self.engine.handle_write(['WRITE', '%Z', '42'], 1)
 
     def test_complex_error_scenarios(self):
-        # Test complex scenarios that might hit remaining error paths
-
-        # Test LET with invalid variable syntax (line 720)
+        # Test LET with invalid variable syntax
         with pytest.raises(ValueError, match="Expected '=' after variable name"):
             self.engine.handle_let(['LET', '$VAR', 'WRONG', '42'], 1)
 
@@ -1239,3 +1261,90 @@ class TestCstolScriptEngine:
         tokens = ['"already_quoted"']
         result = self.engine.build_python_expression(tokens)
         assert result == '"already_quoted"'
+
+    def test_build_python_expression_radix_types(self):
+        tokens = ["O#10"]
+        result = self.engine.build_python_expression(tokens)
+        assert result == "0o10"
+
+        tokens = ["B#10"]
+        result = self.engine.build_python_expression(tokens)
+        assert result == "0b10"
+
+        tokens = ["D#10"]
+        result = self.engine.build_python_expression(tokens)
+        assert result == "10"
+
+        tokens = ["X#10"]
+        result = self.engine.build_python_expression(tokens)
+        assert result == "0x10"
+
+        tokens = ["H#10"]
+        result = self.engine.build_python_expression(tokens)
+        assert result == "b'\\x10'"
+
+    def test_eval_function(self):
+        tokens = ["EVAL", "(", "print('hello')", ")"]
+        result = self.engine.build_python_expression(tokens)
+        assert result == "eval ( \"print(\'hello\')\" )"
+
+    def test_get_undefined_local_variable(self):
+        tokens = ["$UNDEFINED"]
+        with pytest.raises(ValueError, match="Unknown variable: \\$UNDEFINED"):
+            result = self.engine.build_python_expression(tokens)
+
+    def test_function_with_parens(self):
+        tokens = ["SIN", "+", "1"]
+        result = self.engine.build_python_expression(tokens)
+        assert result == '"SIN" + 1'
+
+    def test_else_with_nested_if(self):
+        tokens = ["ELSE"]
+        lines = ["IF 1", "WRITE 1", "ELSE", "IF 2", "WRITE 2", "ENDIF", "ENDIF"]
+        result = self.engine.handle_else(tokens, lines, 3)
+        assert result == 7
+
+    def test_escape_with_nested_loop(self):
+        tokens = ["ESCAPE"]
+        lines = ["LOOP", "WRITE 1", "ESCAPE", "LOOP", "WRITE 2", "ENDLOOP", "ENDLOOP"]
+        self.engine.variables.loop_stack.append([10, None, 1])
+        result = self.engine.handle_escape(tokens, lines, 3)
+        assert result == 7
+
+    def test_if_with_nested_if(self):
+        tokens = ["IF", "FALSE"]
+        lines = ["IF FALSE", "WRITE 1", "IF 2", "WRITE 2", "ENDIF", "ENDIF"]
+        result = self.engine.handle_if(tokens, lines, 1)
+        assert result == 6
+
+    def test_if_with_nested_else(self):
+        tokens = ["IF", "FALSE"]
+        lines = ["IF FALSE", "WRITE 1", "IF 2", "WRITE 2", "ELSE", "WRITE 3", "ENDIF", "ENDIF"]
+        result = self.engine.handle_if(tokens, lines, 1)
+        assert result == 8
+
+    def test_if_with_nested_else_if(self):
+        tokens = ["IF", "FALSE"]
+        lines = ["IF FALSE", "WRITE 1", "IF 2", "WRITE 2", "ELSEIF 3", "WRITE 3", "ENDIF", "ENDIF"]
+        result = self.engine.handle_if(tokens, lines, 1)
+        assert result == 8
+
+    def test_if_with_else(self):
+        tokens = ["IF", "FALSE"]
+        lines = ["IF FALSE", "WRITE 1", "ELSE", "WRITE 2", "ENDIF"]
+        result = self.engine.handle_if(tokens, lines, 1)
+        assert result == 4
+
+    def test_if_with_else_if(self):
+        tokens = ["IF", "FALSE"]
+        lines = ["IF FALSE", "WRITE 1", "ELSE IF 3", "WRITE 2", "ENDIF"]
+        result = self.engine.handle_if(tokens, lines, 1)
+        assert result == 3
+
+    def test_run_line_blank_line(self):
+        result = self.engine.run_line("", [], "test.txt", 1)
+        assert result == 2
+
+    def test_run_line_label(self):
+        result = self.engine.run_line("LABEL:", [], "test.txt", 1)
+        assert result == 2

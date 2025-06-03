@@ -22,7 +22,7 @@ import os
 from openc3.script.exceptions import CheckError
 from openc3.script_engines.script_engine import ScriptEngine
 from openc3.script import wait, wait_expression, ask_string, clear_screen, clear_all_screens, set_tlm, display_screen, \
-    connect_interface, disconnect_interface, send_raw, start, cmd, get_target_file, tlm
+    connect_interface, disconnect_interface, send_raw, start, cmd, get_target_file, tlm, ask_string
 
 class CstolVariables:
     special_variables = {"$$OWLT": 0.0, "$$ERROR": "NO_ERROR", "$$CHECK_INTERVAL": 1.0, "$$STEP_INTERVAL": 1.0, "$$STEP_MODE": "GO"}
@@ -62,6 +62,8 @@ class CstolVariables:
         return self.special_variables.get(name, None)
 
 class CstolScriptEngine(ScriptEngine):
+
+    ONE_YEAR_SECONDS = 31536000
 
     # Dictionary of known CSTOL tokens - Unknown could be numbers or parts of telemetry names
     KNOWN_TOKENS = {
@@ -104,8 +106,47 @@ class CstolScriptEngine(ScriptEngine):
         'LOG2': 'math.log2',
         'LOG10': 'math.log10',
         'SQRT': 'math.sqrt',
-        'getenv': 'os.getenv',
+        'EVAL': 'eval',
+        'GETENV': 'os.getenv',
     }
+
+    KNOWN_UNITS = [
+        'DN',
+        'A',
+        'C',
+        'CM',
+        'F',
+        'FT',
+        'G',
+        'GHZ',
+        'H',
+        'HZ',
+        'IN',
+        'J',
+        'K',
+        'KG',
+        'KM',
+        'KOHM',
+        'KV',
+        'KW',
+        'M',
+        'MA',
+        'MG',
+        'MHZ',
+        'MIN',
+        'MM',
+        'MOHM',
+        'MV',
+        'MW',
+        'OHM',
+        'PA',
+        'PSI',
+        'S',
+        'UA',
+        'UV',
+        'V',
+        'W',
+    ]
 
     def __init__(self, running_script):
         super().__init__(running_script)
@@ -183,8 +224,14 @@ class CstolScriptEngine(ScriptEngine):
             A string representing the Python expression
         """
         final_tokens = []
+        previous_number = False
         for index, token in enumerate(expression_tokens):
-            original_token = token
+            # Handle Units
+            if previous_number and token.upper() in self.KNOWN_UNITS:
+                # Just drop the units
+                previous_number = False
+                continue
+            previous_number = False
 
             # Handle special variables
             if token.startswith('$$'):
@@ -199,7 +246,9 @@ class CstolScriptEngine(ScriptEngine):
             # Handle local variables
             if token.startswith('$'):
                 # Get the actual value of local variable
-                value = self.variables.local_variables.get(token, 0)
+                value = self.variables.local_variables.get(token, None)
+                if value is None:
+                    raise ValueError(f"Unknown variable: {token}")
                 if isinstance(value, str):
                     final_tokens.append(f'"{value}"')
                 else:
@@ -228,9 +277,34 @@ class CstolScriptEngine(ScriptEngine):
                 final_tokens.append(str(timestamp))
                 continue
 
-            # Handle numbers
-            if re.match(r'^([+-]?\d*\.?\d+(?:[eE][+-]?\d+)?)', token):
-                final_tokens.append(str(token))
+            # Handle radix notation integers
+            matches = re.match(r'^[BODXHbodxh]#\d+$', token)
+            if matches is not None:
+                match (token[0].upper()):
+                    case 'B':
+                        final_tokens.append(f'0b{token[2:]}')
+                    case 'O':
+                        final_tokens.append(f'0o{token[2:]}')
+                    case 'D':
+                        final_tokens.append(f'{token[2:]}')
+                    case 'H':
+                        final_tokens.append(str(int(token[2:], 16).to_bytes((len(token[2:]) + 1) // 2, 'big')))
+                    case 'X':
+                        final_tokens.append(f'0x{token[2:]}')
+                previous_number = True
+                continue
+
+            # Handle numbers - Remove DN and EUs
+            # Use regex to extract the numeric part (including scientific notation)
+            # This pattern matches:
+            # - Optional sign (+/-)
+            # - Digits, optional decimal point and more digits
+            # - Optional scientific notation (e/E followed by optional sign and digits)
+            # - Ignores any alphabetic characters that follow
+            matches = re.match(r'^([+-]?\d*\.?\d+(?:[eE][+-]?\d+)?)', token)
+            if matches is not None:
+                final_tokens.append(str(matches.group(1)))
+                previous_number = True
                 continue
 
             # Handle quoted strings and non-numbers
@@ -287,9 +361,9 @@ class CstolScriptEngine(ScriptEngine):
         if now is None:
             now = datetime.datetime.now(datetime.timezone.utc)
 
-        match = re.match(self.TIMESTAMP_PATTERN, timestamp)
-        if match:
-            year, day_of_year, hour, minute, second = match.groups()
+        matches = re.match(self.TIMESTAMP_PATTERN, timestamp)
+        if matches:
+            year, day_of_year, hour, minute, second = matches.groups()
             result = {
                 'hour': int(hour),
                 'minute': int(minute),
@@ -442,9 +516,9 @@ class CstolScriptEngine(ScriptEngine):
                 # %E or %e Output in floating point values Default for float or EU value
                 format = expr[0][1:].upper()
                 if format not in ['X', 'O', 'B', 'I', 'D', 'F', 'E']:
-                    raise ValueError(f"Invalid format %'{format}' in WRITE command at line {line_no}")
+                    raise ValueError(f"Invalid format %'{format}' in CHECK command at line {line_no}")
                 if len(expr) < 2:
-                    raise ValueError(f"Missing value for format %'{format}' in WRITE command at line {line_no}")
+                    raise ValueError(f"Missing value for format %'{format}' in CHECK command at line {line_no}")
                 # Remove format from the expression
                 expr = expr[1:]
 
@@ -539,6 +613,8 @@ class CstolScriptEngine(ScriptEngine):
                         tokens = tokens[1:]
                     else:
                         raise ValueError(f"TURN and FORCE must be followed by ON or OFF at line {line_no}")
+            case "CMD":
+                pass
 
         # Now we need to discover any TO, BY, FROM, WITH clauses
         target_name = None
@@ -562,6 +638,8 @@ class CstolScriptEngine(ScriptEngine):
             pretokens = self.evaluate_tokens(single_value_expressions[0])
             if len(pretokens) == 1:
                 target_name = pretokens[0]
+                cmd_name = verb
+                args["VALUE"] = value
             elif len(pretokens) == 2:
                 target_name = pretokens[0]
                 if verb == "CMD":
@@ -618,7 +696,19 @@ class CstolScriptEngine(ScriptEngine):
 
     def handle_else(self, tokens, lines, line_no):
         if len(tokens) == 1 and tokens[0] == 'ELSE':
-            return line_no + 1
+            # The only way we ever hit an ELSE is if we were in a successful block beforehand
+            # Therefore goto the ENDIF
+            depth = 1
+            for i in range(line_no, len(lines)):
+                next_line = lines[i].strip().upper()
+                if next_line.startswith('IF '):
+                    depth += 1
+                elif next_line.startswith('ENDIF') or next_line.startswith('END IF'):
+                    depth -= 1
+                    if depth == 0:
+                        return i + 1
+            raise ValueError(f"No matching ENDIF for ELSE command at line {line_no}")
+
         elif len(tokens) > 1:
             if tokens[0] == 'ELSEIF':
                 return self.handle_if(tokens, lines, line_no)
@@ -657,7 +747,8 @@ class CstolScriptEngine(ScriptEngine):
             elif next_line.startswith('END LOOP') or next_line.startswith('ENDLOOP'):
                 depth -= 1
                 if depth == 0:
-                    self.variables.loop_stack.pop()
+                    if len(self.variables.loop_stack) > 0:
+                        self.variables.loop_stack.pop()
                     return i + 1
         raise ValueError(f"No matching ENDLOOP found for ESCAPE command at line {line_no}")
 
@@ -693,13 +784,23 @@ class CstolScriptEngine(ScriptEngine):
             # Find the matching ENDIF or ELSE
             depth = 1
             for i in range(line_no, len(lines)):
-                next_line = lines[i].strip()
+                next_line = lines[i].strip().upper()
                 if next_line.startswith('IF '):
                     depth += 1
-                elif next_line.startswith('ENDIF') or next_line.startswith('END IF') or next_line.startswith('ELSE'):
+                elif next_line.startswith('ENDIF') or next_line.startswith('END IF'):
                     depth -= 1
                     if depth == 0:
                         return i + 1
+                elif next_line.startswith('ELSE'):
+                    if next_line.startswith('ELSEIF') or next_line.startswith('ELSE IF'):
+                        # Continue to the ELSE IF
+                        if depth == 1:
+                            return i + 1
+                    else:
+                        # Regular ELSE - Continue to line after
+                        if depth == 1:
+                            return i + 2
+
         raise ValueError(f"No matching ENDIF or ELSE found for IF command at line {line_no}")
 
     def handle_let(self, tokens, line_no):
@@ -843,11 +944,13 @@ class CstolScriptEngine(ScriptEngine):
         elif len(tokens) == 2:
             # Timestamp wait - Still need to handle a possible expression like a variable
             seconds = self.evaluate_expression([tokens[1]])
-            if seconds is not None:
-                if isinstance(seconds, (int, float, complex)) and not isinstance(seconds, bool):
-                    wait(seconds)
-                else:
-                    raise ValueError(f"Invalid timestamp format at line {line_no}")
+            if isinstance(seconds, (int, float, complex)) and not isinstance(seconds, bool):
+                if seconds > self.ONE_YEAR_SECONDS:
+                    now = datetime.datetime.now().timestamp()
+                    seconds = seconds - now
+                    if seconds < 0:
+                        seconds = 0.0
+                wait(seconds)
             else:
                 raise ValueError(f"Invalid timestamp format at line {line_no}")
         else:
@@ -857,11 +960,13 @@ class CstolScriptEngine(ScriptEngine):
             if len(expressions) > 1:
                 # Timeout given with "OR FOR" or "OR UNTIL"
                 seconds = self.evaluate_expression(expressions[1][1:]) # Drop assumed FOR or UNTIL token
-                if seconds is not None:
-                    if isinstance(seconds, (int, float, complex)) and not isinstance(seconds, bool):
-                        wait_expression(python_expression, seconds, globals={'math': math, 'os': os, 'tlm': tlm})
-                    else:
-                        raise ValueError(f"Invalid timestamp format at line {line_no}")
+                if isinstance(seconds, (int, float, complex)) and not isinstance(seconds, bool):
+                    if seconds > self.ONE_YEAR_SECONDS:
+                        now = datetime.datetime.now().timestamp()
+                        seconds = seconds - now
+                        if seconds < 0:
+                            seconds = 0.0
+                    wait_expression(python_expression, seconds, globals={'math': math, 'os': os, 'tlm': tlm})
                 else:
                     raise ValueError(f"Invalid timestamp format at line {line_no}")
             else:
@@ -1003,9 +1108,6 @@ class CstolScriptEngine(ScriptEngine):
                 case "WRITE":
                     self.handle_write(tokens, line_no)
                 case _:
-                    if len(tokens) > 0 and len(tokens[0]) > 0 and tokens[0][-1] == ':':
-                        # Label
-                        next
                     raise ValueError(f"Unknown keyword '{keyword}' at line {line_no}")
 
         return line_no + 1
