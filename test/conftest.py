@@ -1,3 +1,8 @@
+# Copyright 2025 OpenC3, Inc.
+# All Rights Reserved.
+#
+# This program is only licensed for use by the University of Colorado LASP
+
 import sys
 import os
 

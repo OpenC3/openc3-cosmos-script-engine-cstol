@@ -1,0 +1,37 @@
+# This workflow uses actions that are not certified by GitHub.
+# They are provided by a third-party and are governed by
+# separate terms of service, privacy policy, and support
+# documentation.
+# This workflow will download a prebuilt Ruby version, install dependencies and run tests with Rake
+# For more information see: https://github.com/marketplace/actions/setup-ruby-jruby-and-truffleruby
+
+# Reference environment variables: https://docs.github.com/en/actions/reference/environment-variables
+
+name: OpenC3 Python Unit Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  OPENC3_CLOUD: local
+
+jobs:
+  unit-test:
+    if: ${{ github.actor != 'dependabot[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Run unit test
+        run: |
+          python -m pip install --upgrade pip
+          python -m venv test_env
+          source test_env/bin/activate
+          pip install -r requirements.txt
+          pytest

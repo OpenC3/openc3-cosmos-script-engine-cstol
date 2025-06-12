@@ -1,3 +1,8 @@
+# Copyright 2025 OpenC3, Inc.
+# All Rights Reserved.
+#
+# This program is only licensed for use by the University of Colorado LASP
+
 import pytest
 import datetime
 import unittest.mock as mock
@@ -97,7 +102,7 @@ class TestCstolScriptEngine:
     def test_handle_declare_variable(self):
         tokens = ["DECLARE", "VARIABLE", "$TEST", "=", "42"]
         self.engine.handle_declare(tokens, 1)
-        assert self.engine.variables.local_variables["$TEST"] == "42"
+        assert self.engine.variables.local_variables["$TEST"] == 42
 
     def test_handle_declare_invalid_mode(self):
         tokens = ["DECLARE", "INVALID", "$TEST", "=", "42"]
@@ -144,7 +149,7 @@ class TestCstolScriptEngine:
     @mock.patch('cstol_script_engine.ask_string')
     def test_handle_ask_quoted(self, mock_ask_string):
         mock_ask_string.return_value = "\"tesT_Answer\""
-        tokens = ["ASK", "$VAR", "What is your name?"]
+        tokens = ["ASK", "$VAR", "\"What is your name?\""]
         self.engine.handle_ask(tokens, 1)
         mock_ask_string.assert_called_once_with("What is your name?")
         assert self.engine.variables.local_variables["$VAR"] == "tesT_Answer"
@@ -190,7 +195,7 @@ class TestCstolScriptEngine:
 
     @mock.patch('cstol_script_engine.clear_screen')
     def test_handle_clear_screen(self, mock_clear_screen):
-        tokens = ["CLEAR", "INST ADCS"]
+        tokens = ["CLEAR", "\"INST ADCS\""]
         self.engine.handle_clear(tokens, 1)
         mock_clear_screen.assert_called_once_with("INST", "ADCS")
 
@@ -202,7 +207,7 @@ class TestCstolScriptEngine:
 
     @mock.patch('cstol_script_engine.display_screen')
     def test_handle_display(self, mock_display_screen):
-        tokens = ["DISPLAY", "INST ADCS"]
+        tokens = ["DISPLAY", "\"INST ADCS\""]
         self.engine.handle_display(tokens, 1)
         mock_display_screen.assert_called_once_with("INST", "ADCS")
 
@@ -651,7 +656,7 @@ class TestCstolScriptEngine:
         mock_file.read.return_value = b"test_data"
         mock_get_file.return_value = mock_file
 
-        tokens = ["LOAD", "interface1", "AT", "location1", "FROM", "file.txt"]
+        tokens = ["LOAD", "interface1", "AT", "location1", "FROM", "\"file.txt\""]
         self.engine.handle_load(tokens, 1)
         mock_send.assert_called_once_with("interface1", b"test_data")
 
@@ -917,7 +922,7 @@ class TestCstolScriptEngine:
 
     @mock.patch('cstol_script_engine.os.environ', {})
     def test_handle_start_with_environment_variables(self, ):
-        tokens = ["START", "PROC1", "arg1", ",", "arg2"]
+        tokens = ["START", "\"PROC1\"", "arg1", ",", "arg2"]
         with mock.patch('cstol_script_engine.start') as mock_start:
             with mock.patch.dict('os.environ', {}, clear=True):
                 self.engine.handle_start(tokens, 1)

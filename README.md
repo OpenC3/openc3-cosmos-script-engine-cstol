@@ -197,4 +197,4 @@ FOR ALL CONTRIBUTIONS TO THE OPENC3 PROJECT, OPENC3, INC. MAINTAINS ALL RIGHTS T
 
 ## License
 
-OpenC3 is released under the AGPL v3 with a few addendums. See [LICENSE.txt](LICENSE.txt)
+Licensed for use only by University of Colorado LASP. See [LICENSE.txt](LICENSE.txt)
