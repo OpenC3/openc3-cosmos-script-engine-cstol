@@ -1,6 +1,6 @@
 VARIABLE test_mode false
 
-SCRIPT_ENGINE .cstol cstol_script_engine.py
+SCRIPT_ENGINE .prc cstol_script_engine.py
 
 <% include_test = (test_mode.to_s.strip.downcase == "true") %>
 <% if include_test %>

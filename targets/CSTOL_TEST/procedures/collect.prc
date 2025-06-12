@@ -1,0 +1,65 @@
+PROC collect
+
+DECLARE VARIABLE $var = "test"
+
+BEGIN
+
+WRITE $$CURRENT_TIME
+WRITE $$OWLT
+WRITE $$SC_TIME
+WRITE $$ERROR
+WRITE $$CHECK_INTERVAL
+WRITE $$CLP_STP_INTERVAL
+CHECK $$STEP_INTERVAL
+CHECK $$CLP_STEP_MODE
+CHECK $$STEP_MODE
+CHECK $$LOOP_COUNT
+
+WRITE $var
+
+HERE:
+RUN "ls"
+SWITCH ON EXAMPLE_INT
+WAIT 1
+LOAD EXAMPLE_INT AT 0 FROM "INST/procedures/collect.rb"
+SEND "hello" TO EXAMPLE_INT
+
+LOOP
+  ASK $number "Enter a Number"
+  WRITE $number
+
+  IF $number > 1
+    LET $clearscreens = TRUE
+    DISPLAY "INST ADCS"
+    DISPLAY "INST HS"
+  ELSE IF $number < 0
+    LET $clearscreens = TRUE
+    DISPLAY "INST IMAGE"
+  ELSE
+    LET $clearscreens = FALSE
+  ENDIF
+
+  LET $collects = INST COLLECTS
+  CMD INST COLLECT with TYPE NORMAL
+  WAIT INST COLLECTS > $collects
+  CHECK INST COLLECTS VS $collects + 1
+
+  IF $clearscreens
+    CLEAR "INST ADCS"
+    CLEAR ALL
+  ENDIF
+
+  IF $$LOOP_COUNT > 2
+    ESCAPE
+  ENDIF
+
+  IF $number > 100
+    RETURN
+  ENDIF
+ENDLOOP
+
+IF $number > 10
+  GOTO HERE
+ENDIF
+
+ENDPROC

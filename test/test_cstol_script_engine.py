@@ -3,7 +3,7 @@ import datetime
 import unittest.mock as mock
 from unittest.mock import MagicMock
 from cstol_script_engine import CstolScriptEngine, CstolVariables
-
+from openc3.script.exceptions import CheckError, StopScript
 
 class TestCstolVariables:
     def test_init(self):
@@ -44,38 +44,6 @@ class TestCstolScriptEngine:
 
     def test_init(self):
         assert isinstance(self.engine.variables, CstolVariables)
-
-    def test_tokenizer_basic(self):
-        result = self.engine.tokenizer("WRITE 'Hello World'")
-        assert result == ['WRITE', "'Hello World'"]
-
-    def test_tokenizer_special_chars(self):
-        result = self.engine.tokenizer("LET $VAR = 42")
-        assert result == ["LET", "$VAR", "=", "42"]
-
-    def test_tokenizer_preserves_quotes(self):
-        result = self.engine.tokenizer('WRITE "Hello World"')
-        assert result == ['WRITE', '"Hello World"']
-
-    def test_tokenizer_preserves_single_quotes(self):
-        result = self.engine.tokenizer("WRITE 'Single quotes'")
-        assert result == ['WRITE', "'Single quotes'"]
-
-    def test_tokenizer_multiple_quoted_strings(self):
-        result = self.engine.tokenizer('WRITE "Hello" , "World"')
-        assert result == ['WRITE', '"Hello"', ',', '"World"']
-
-    def test_tokenizer_timestamps(self):
-        result = self.engine.tokenizer('WRITE 11:30:00')
-        assert result == ['WRITE', '11:30:00']
-        result = self.engine.tokenizer('WRITE 2025/123-11:30:00.57')
-        assert result == ['WRITE', '2025', '/', '123', '-', '11:30:00.57']
-        result = self.engine.tokenizer('WRITE /123-11:30:00.57')
-        assert result == ['WRITE', '/', '123', '-', '11:30:00.57']
-        result = self.engine.tokenizer('WRITE 2025/-11:30:00.57')
-        assert result == ['WRITE', '2025', '/', '-', '11:30:00.57']
-        result = self.engine.tokenizer('WRITE /-11:30:00.57')
-        assert result == ['WRITE', '/', '-', '11:30:00.57']
 
     def test_cstol_tokenizer_reconstructs_timestamps(self):
         result = self.engine.cstol_tokenizer('WRITE 11:30:00')
@@ -171,12 +139,32 @@ class TestCstolScriptEngine:
         tokens = ["ASK", "$VAR", "What is your name?"]
         self.engine.handle_ask(tokens, 1)
         mock_ask_string.assert_called_once_with("What is your name?")
-        assert self.engine.variables.local_variables["$VAR"] == "test_answer"
+        assert self.engine.variables.local_variables["$VAR"] == "TEST_ANSWER"
+
+    @mock.patch('cstol_script_engine.ask_string')
+    def test_handle_ask_quoted(self, mock_ask_string):
+        mock_ask_string.return_value = "\"tesT_Answer\""
+        tokens = ["ASK", "$VAR", "What is your name?"]
+        self.engine.handle_ask(tokens, 1)
+        mock_ask_string.assert_called_once_with("What is your name?")
+        assert self.engine.variables.local_variables["$VAR"] == "tesT_Answer"
 
     def test_handle_ask_invalid_format(self):
         tokens = ["ASK", "$VAR"]
         with pytest.raises(ValueError, match="Invalid ASK command format"):
             self.engine.handle_ask(tokens, 1)
+
+    def test_handle_return(self):
+        lines = ["IF 1 = 1", "  RETURN", "ENDIF"]
+        tokens = ["RETURN"]
+        result = self.engine.handle_return(tokens, lines, 2)
+        assert result == 4
+
+    def test_handle_return_all(self):
+        lines = ["IF 1 = 1", "  RETURN ALL", "ENDIF"]
+        tokens = ["RETURN", "ALL"]
+        with pytest.raises(StopScript):
+            result = self.engine.handle_return(tokens, lines, 2)
 
     def test_flatten(self):
         result = self.engine.flatten([[1, 2], [3, 4], [5]])
@@ -509,6 +497,42 @@ class TestCstolScriptEngine:
         result = self.engine.variables.get_special_variable("$$SC_TIME")
         assert isinstance(result, float)
 
+    def test_set_special_variable_clp_stp_interval(self):
+        self.engine.variables.set_special_variable("$$CLP_STP_INTERVAL", 10)
+        assert self.engine.variables.special_variables["$$CLP_STP_INTERVAL"] == 10
+        assert self.engine.variables.special_variables["$$STEP_INTERVAL"] == 10
+
+    def test_set_special_variable_step_interval(self):
+        self.engine.variables.set_special_variable("$$STEP_INTERVAL", 2)
+        assert self.engine.variables.special_variables["$$CLP_STP_INTERVAL"] == 2
+        assert self.engine.variables.special_variables["$$STEP_INTERVAL"] == 2
+
+    def test_set_special_variable_clp_step_mode(self):
+        with mock.patch('cstol_script_engine.run_mode') as mock_cmd:
+            self.engine.variables.set_special_variable("$$CLP_STEP_MODE", "GO")
+            mock_cmd.assert_called_once()
+        with mock.patch('cstol_script_engine.run_mode') as mock_cmd:
+            self.engine.variables.set_special_variable("$$CLP_STEP_MODE", "PAUSE")
+            mock_cmd.assert_called_once()
+        with mock.patch('cstol_script_engine.step_mode') as mock_cmd:
+            self.engine.variables.set_special_variable("$$CLP_STEP_MODE", "WAIT")
+            mock_cmd.assert_called_once()
+        with pytest.raises(ValueError, match="Invalid step mode"):
+            self.engine.variables.set_special_variable("$$CLP_STEP_MODE", "OTHER")
+
+    def test_set_special_variable_step_mode(self):
+        with mock.patch('cstol_script_engine.run_mode') as mock_cmd:
+            self.engine.variables.set_special_variable("$$STEP_MODE", "GO")
+            mock_cmd.assert_called_once()
+        with mock.patch('cstol_script_engine.run_mode') as mock_cmd:
+            self.engine.variables.set_special_variable("$$STEP_MODE", "PAUSE")
+            mock_cmd.assert_called_once()
+        with mock.patch('cstol_script_engine.step_mode') as mock_cmd:
+            self.engine.variables.set_special_variable("$$STEP_MODE", "WAIT")
+            mock_cmd.assert_called_once()
+        with pytest.raises(ValueError, match="Invalid step mode"):
+            self.engine.variables.set_special_variable("$$STEP_MODE", "OTHER")
+
     def test_run_line_with_continuation(self):
         self.engine.saved_tokens = ["WRITE"]
         result = self.engine.run_line("'Hello'", [], "test.txt", 1)
@@ -642,11 +666,22 @@ class TestCstolScriptEngine:
             self.engine.handle_load(tokens, 1)
 
     @mock.patch('cstol_script_engine.wait_expression')
-    def test_handle_wait_with_expression_and_timeout(self, mock_wait_expr):
+    def test_handle_wait_with_expression_and_not_timeout(self, mock_wait_expr):
+        mock_wait_expr.return_value = True
         self.engine.variables.local_variables["$VAR"] = 2
         tokens = ["WAIT", "$VAR", "=", "1", "OR", "FOR", "12:30:45"]
         self.engine.handle_wait(tokens, 1)
-        mock_wait_expr.assert_called_once_with(mock.ANY, 45045, globals=mock.ANY)
+        mock_wait_expr.assert_called_once_with(mock.ANY, 45045, 1.0, globals=mock.ANY)
+        assert self.engine.variables.get_special_variable("$$ERROR") == "NO_ERROR"
+
+    @mock.patch('cstol_script_engine.wait_expression')
+    def test_handle_wait_with_expression_and_timeout(self, mock_wait_expr):
+        mock_wait_expr.return_value = False
+        self.engine.variables.local_variables["$VAR"] = 2
+        tokens = ["WAIT", "$VAR", "=", "1", "OR", "FOR", "12:30:45"]
+        self.engine.handle_wait(tokens, 1)
+        mock_wait_expr.assert_called_once_with(mock.ANY, 45045, 1.0, globals=mock.ANY)
+        assert self.engine.variables.get_special_variable("$$ERROR") == "TIME_OUT"
 
     @mock.patch('cstol_script_engine.wait_expression')
     def test_handle_wait_with_expression_and_abs_timeout_future(self, mock_wait_expr):
@@ -664,10 +699,21 @@ class TestCstolScriptEngine:
 
     @mock.patch('cstol_script_engine.wait_expression')
     def test_handle_wait_with_expression_no_timeout(self, mock_wait_expr):
+        mock_wait_expr.return_value = True
         self.engine.variables.local_variables["$VAR"] = 2
         tokens = ["WAIT", "$VAR", "=", "1"]
         self.engine.handle_wait(tokens, 1)
-        mock_wait_expr.assert_called_once_with(mock.ANY, 1000000000, globals=mock.ANY)
+        mock_wait_expr.assert_called_once_with(mock.ANY, 1000000000, 1.0, globals=mock.ANY)
+        assert self.engine.variables.get_special_variable("$$ERROR") == "NO_ERROR"
+
+    @mock.patch('cstol_script_engine.wait_expression')
+    def test_handle_wait_with_expression_infinite_timeout(self, mock_wait_expr):
+        mock_wait_expr.return_value = False
+        self.engine.variables.local_variables["$VAR"] = 2
+        tokens = ["WAIT", "$VAR", "=", "1"]
+        self.engine.handle_wait(tokens, 1)
+        mock_wait_expr.assert_called_once_with(mock.ANY, 1000000000, 1.0, globals=mock.ANY)
+        assert self.engine.variables.get_special_variable("$$ERROR") == "TIME_OUT"
 
     def test_handle_wait_invalid_timeout_timestamp(self):
         self.engine.variables.local_variables["$VAR"] = 2
@@ -900,6 +946,10 @@ class TestCstolScriptEngine:
         # This covers the "next" statement in the final else clause
         result = self.engine.run_line("LABEL1:", [], "test.txt", 1)
         assert result == 2
+
+    def test_run_line_label_with_keyword(self):
+        result = self.engine.run_line("LABEL1: RETURN", ["LABEL1: RETURN", "WRITE 'test'"], "test.txt", 1)
+        assert result == 3
 
     def test_build_python_expression_operator_conversions(self):
         self.engine.variables.local_variables["$VAR"] = 1

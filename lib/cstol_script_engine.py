@@ -19,13 +19,21 @@ import shlex
 import datetime
 import math
 import os
-from openc3.script.exceptions import CheckError
+from openc3.script.exceptions import CheckError, StopScript
 from openc3.script_engines.script_engine import ScriptEngine
 from openc3.script import wait, wait_expression, ask_string, clear_screen, clear_all_screens, set_tlm, display_screen, \
-    connect_interface, disconnect_interface, send_raw, start, cmd, get_target_file, tlm, ask_string
+    connect_interface, disconnect_interface, send_raw, start, cmd, get_target_file, tlm, ask_string, set_line_delay, step_mode, run_mode
 
 class CstolVariables:
-    special_variables = {"$$OWLT": 0.0, "$$ERROR": "NO_ERROR", "$$CHECK_INTERVAL": 1.0, "$$STEP_INTERVAL": 1.0, "$$STEP_MODE": "GO"}
+    special_variables = {
+        "$$OWLT": 0.0,
+        "$$ERROR": "NO_ERROR",
+        "$$CHECK_INTERVAL": 1.0,
+        "$$STEP_INTERVAL": 0.1,
+        "$$CLP_STP_INTERVAL": 0.1,
+        "$$CLP_STEP_MODE": "PAUSE",
+        "$$STEP_MODE": "PAUSE"
+    }
 
     def __init__(self):
         self.local_variables = {}
@@ -39,6 +47,27 @@ class CstolVariables:
         if not name.startswith('$$'):
             raise ValueError(f"Special variable names must start with '$$': {name}")
         self.special_variables[name] = value
+        match name.upper():
+            case "$$CLP_STP_INTERVAL":
+                set_line_delay(value)
+                self.special_variables["$$STEP_INTERVAL"] = value
+            case "$$STEP_INTERVAL":
+                self.set_special_variable("$$CLP_STP_INTERVAL", value)
+            case "$$CLP_STEP_MODE":
+                mode = str(value).upper()
+                if mode == "GO":
+                    run_mode()
+                    set_line_delay(0)
+                elif mode == "PAUSE":
+                    run_mode()
+                    set_line_delay(self.special_variables["$$STEP_INTERVAL"])
+                elif mode == "WAIT":
+                    step_mode()
+                else:
+                    raise ValueError(f"Invalid step mode: {mode}")
+                self.special_variables["$$STEP_MODE"] = value
+            case "$$STEP_MODE":
+                self.set_special_variable("$$CLP_STEP_MODE", value)
 
     def get_special_variable(self, name):
         """
@@ -57,7 +86,6 @@ class CstolVariables:
                     return self.loop_stack[-1][2]
                 else:
                     return 0
-
 
         return self.special_variables.get(name, None)
 
@@ -498,8 +526,25 @@ class CstolScriptEngine(ScriptEngine):
 
         variable = tokens[1]
         question = tokens[2]
+        if (question.startswith('"') and question.endswith('"')) or (question.startswith("'") and question.endswith("'")):
+            # Remove quotes
+            question = question[1:-1]
+        answer = ask_string(question)
+        if answer is not None:
+            if answer[0] == '"' and answer[-1] == '"':
+                # Remove quotes and don't uppercase and don't eval
+                answer = answer[1:-1]
+            else:
+                # Tokenize answer
+                answer_tokens = self.cstol_tokenizer(answer)
 
-        self.variables.local_variables[variable] = ask_string(question)
+                # Evaluate answer
+                answer = self.evaluate_expression(answer_tokens)
+
+                # Uppercase
+                if isinstance(answer, str):
+                    answer = answer.upper()
+            self.variables.local_variables[variable] = answer
 
     def handle_check(self, tokens, line_no):
         expressions = self.extract_expressions(tokens[1:], ",")
@@ -591,6 +636,9 @@ class CstolScriptEngine(ScriptEngine):
             clear_all_screens()
         else:
             screen_name = tokens[1]
+            if (screen_name.startswith('"') and screen_name.endswith('"')) or (screen_name.startswith("'") and screen_name.endswith("'")):
+                # Remove quotes
+                screen_name = screen_name[1:-1]
             clear_screen(*screen_name.split())
 
     def handle_cmd(self, tokens, line_no):
@@ -687,11 +735,14 @@ class CstolScriptEngine(ScriptEngine):
         if equals != '=':
             raise ValueError(f"Expected '=' after variable name in DECLARE command at line {line_no}")
         #default_value = self.token_to_value(tokens[4])
-        default_value = tokens[4]
+        default_value = self.evaluate_tokens([tokens[4]])[0]
         self.variables.local_variables[variable_name] = default_value
 
     def handle_display(self, tokens, line_no):
         screen_name = tokens[1]
+        if (screen_name.startswith('"') and screen_name.endswith('"')) or (screen_name.startswith("'") and screen_name.endswith("'")):
+            # Remove quotes
+            screen_name = screen_name[1:-1]
         display_screen(*screen_name.split())
 
     def handle_else(self, tokens, lines, line_no):
@@ -857,6 +908,9 @@ class CstolScriptEngine(ScriptEngine):
         interface_name = results[0]
         location = results[1]
         filename = results[2]
+        if (filename.startswith('"') and filename.endswith('"')) or (filename.startswith("'") and filename.endswith("'")):
+            # Remove quotes
+            filename = filename[1:-1]
         file = get_target_file(filename)
         data = file.read()
         file.close()
@@ -889,6 +943,12 @@ class CstolScriptEngine(ScriptEngine):
                 else:
                     raise ValueError(f"Invalid variable '{token}' in PROC command at line {line_no}")
 
+    def handle_return(self, tokens, lines, line_no):
+        if len(tokens) > 1:
+            if tokens[1].upper() == 'ALL':
+                raise StopScript
+        return (len(lines) + 1)
+
     def handle_run(self, tokens, line_no):
         if len(tokens) < 2:
             raise ValueError(f"Invalid RUN command format at line {line_no}")
@@ -916,6 +976,11 @@ class CstolScriptEngine(ScriptEngine):
     def handle_start(self, tokens, line_no):
         # START proc-name [argument-list]
         proc_name = tokens[1]
+
+        if (proc_name.startswith('"') and proc_name.endswith('"')) or (proc_name.startswith("'") and proc_name.endswith("'")):
+            # Remove quotes
+            proc_name = proc_name[1:-1]
+
         args = []
         if len(tokens) > 2:
             # Handle argument list
@@ -966,11 +1031,19 @@ class CstolScriptEngine(ScriptEngine):
                         seconds = seconds - now
                         if seconds < 0:
                             seconds = 0.0
-                    wait_expression(python_expression, seconds, globals={'math': math, 'os': os, 'tlm': tlm})
+                    result = wait_expression(python_expression, seconds, self.variables.get_special_variable("$$CHECK_INTERVAL"), globals={'math': math, 'os': os, 'tlm': tlm})
+                    if result:
+                        self.variables.set_special_variable("$$ERROR", "NO_ERROR")
+                    else:
+                        self.variables.set_special_variable("$$ERROR", "TIME_OUT")
                 else:
                     raise ValueError(f"Invalid timestamp format at line {line_no}")
             else:
-                wait_expression(python_expression, 1000000000, globals={'math': math, 'os': os, 'tlm': tlm}) # Effective infinite wait
+                result = wait_expression(python_expression, 1000000000, self.variables.get_special_variable("$$CHECK_INTERVAL"), globals={'math': math, 'os': os, 'tlm': tlm}) # Effective infinite wait
+                if result:
+                    self.variables.set_special_variable("$$ERROR", "NO_ERROR")
+                else:
+                    self.variables.set_special_variable("$$ERROR", "TIME_OUT")
 
     def handle_write(self, tokens, line_no):
         expressions = self.extract_expressions(tokens[1:], ",")
@@ -1052,7 +1125,11 @@ class CstolScriptEngine(ScriptEngine):
 
             # Handle labels
             if keyword.endswith(':'):
-                return line_no + 1
+                if len(tokens) > 1:
+                    tokens = tokens[1:]
+                    keyword = tokens[0].upper()
+                else:
+                    return line_no + 1
 
             match keyword:
                 case "ASK":
@@ -1095,6 +1172,8 @@ class CstolScriptEngine(ScriptEngine):
                     self.handle_loop(tokens, line_no)
                 case "PROC":
                     self.handle_proc(tokens, line_no)
+                case "RETURN":
+                    return self.handle_return(tokens, lines, line_no)
                 case "RUN":
                     self.handle_run(tokens, line_no)
                 case "SEND":
