@@ -1,4 +1,4 @@
-## OpenC3 Load Sim Plugin
+## OpenC3 CSTOL Script Engine Plugin
 
 [Documentation](http://openc3.com)
 
