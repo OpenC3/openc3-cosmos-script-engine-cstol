@@ -1,6 +1,6 @@
 ## OpenC3 CSTOL Script Engine Plugin
 
-[Documentation](http://openc3.com)
+CSTOL language originally developed by the University of Colorado / LASP.
 
 This plugin provides a CSTOL script engine that allows COSMOS ScriptRunner to execute CSTOL scripts.
 
@@ -197,4 +197,4 @@ FOR ALL CONTRIBUTIONS TO THE OPENC3 PROJECT, OPENC3, INC. MAINTAINS ALL RIGHTS T
 
 ## License
 
-Licensed for use only by University of Colorado LASP. See [LICENSE.txt](LICENSE.txt)
+The MIT License. See [LICENSE.txt](LICENSE.txt)
