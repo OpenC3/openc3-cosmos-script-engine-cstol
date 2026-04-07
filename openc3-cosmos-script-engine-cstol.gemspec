@@ -26,5 +26,12 @@ spec = Gem::Specification.new do |s|
   end
   s.licenses = ['Nonstandard']
 
-  s.files = Dir.glob("{targets,lib,procedures,tools,microservices}/**/*") + %w(Rakefile LICENSE.txt README.md plugin.txt)
+  s.files = Dir.glob("{targets,lib,procedures,tools,microservices,public}/**/*") + %w(Rakefile LICENSE.txt README.md plugin.txt)
+  s.metadata = {
+    "source_code_uri" => "https://github.com/OpenC3/openc3-cosmos-script-engine-cstol",
+    "openc3_store_keywords" => "script, cstol",
+    "openc3_store_image" => "public/store_img.webp",
+    "openc3_store_access_type" => "public",
+    "openc3_cosmos_minimum_version" => "6.0.0"
+  }
 end
