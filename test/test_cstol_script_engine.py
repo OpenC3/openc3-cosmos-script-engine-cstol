@@ -25,7 +25,7 @@ import datetime
 import unittest.mock as mock
 from unittest.mock import MagicMock
 from cstol_script_engine import CstolScriptEngine, CstolVariables
-from openc3.script.exceptions import CheckError, StopScript
+from openc3.script.exceptions import CheckError, StopScriptError
 
 class TestCstolVariables:
     def test_init(self):
@@ -185,7 +185,7 @@ class TestCstolScriptEngine:
     def test_handle_return_all(self):
         lines = ["IF 1 = 1", "  RETURN ALL", "ENDIF"]
         tokens = ["RETURN", "ALL"]
-        with pytest.raises(StopScript):
+        with pytest.raises(StopScriptError):
             result = self.engine.handle_return(tokens, lines, 2)
 
     def test_flatten(self):

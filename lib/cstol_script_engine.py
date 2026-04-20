@@ -25,7 +25,7 @@ import shlex
 import datetime
 import math
 import os
-from openc3.script.exceptions import CheckError, StopScript
+from openc3.script.exceptions import CheckError, StopScriptError
 from openc3.script_engines.script_engine import ScriptEngine
 from openc3.script import wait, wait_expression, ask_string, clear_screen, clear_all_screens, set_tlm, display_screen, \
     connect_interface, disconnect_interface, send_raw, start, cmd, get_target_file, tlm, ask_string, set_line_delay, step_mode, run_mode
@@ -949,7 +949,7 @@ class CstolScriptEngine(ScriptEngine):
     def handle_return(self, tokens, lines, line_no):
         if len(tokens) > 1:
             if tokens[1].upper() == 'ALL':
-                raise StopScript
+                raise StopScriptError
         return (len(lines) + 1)
 
     def handle_run(self, tokens, line_no):
