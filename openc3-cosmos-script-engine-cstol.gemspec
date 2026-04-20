@@ -32,6 +32,6 @@ spec = Gem::Specification.new do |s|
     "openc3_store_keywords" => "script, cstol",
     "openc3_store_image" => "public/store_img.png",
     "openc3_store_access_type" => "public",
-    "openc3_cosmos_minimum_version" => "6.0.0"
+    "openc3_cosmos_minimum_version" => "7.0.0"
   }
 end
