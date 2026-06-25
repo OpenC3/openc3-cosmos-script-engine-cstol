@@ -43,6 +43,7 @@ class CstolVariables:
 
     def __init__(self):
         self.local_variables = {}
+        self.if_stack = []
         self.loop_stack = []
 
     def set_special_variable(self, name, value):
@@ -240,7 +241,19 @@ class CstolScriptEngine(ScriptEngine):
                 i += 3  # Skip the next 2 tokens since we combined them
 
             else:
-                reconstructed_tokens.append(tokens[i])
+                # Recombine multi-part operator tokens
+                token = tokens[i]
+                if token in self.KNOWN_TOKENS and i + 1 < len(tokens):
+                    next_token = tokens[i + 1]
+                    if ((token == '*' and next_token == '*') or
+                        (token == '<' and next_token == '=') or
+                        (token == '>' and next_token == '=') or
+                        (token == '/' and next_token == '=')):
+                        reconstructed_tokens.append(token + next_token)
+                        i += 2 # Skip the next token
+                        continue
+
+                reconstructed_tokens.append(token)
                 i += 1
 
         return reconstructed_tokens
@@ -388,7 +401,7 @@ class CstolScriptEngine(ScriptEngine):
         return ' '.join(processed_tokens)
 
     # Combined regex pattern to match both formats
-    TIMESTAMP_PATTERN = r'(?:(\d{4})?/(\d{1,3})?-)?(\d{1,2}):(\d{1,2}):(\d{1,2}\.?\d*)'
+    TIMESTAMP_PATTERN = r'(?:(\d{4})?/(\d{1,3})?-)?(\d{0,2}):(\d{0,2}):(\d{1,2}\.?\d*)'
 
     # Will convert a CSTOL Clock Time or Delta Time into floating point seconds
     def parse_timestamp(self, timestamp, now = None):
@@ -398,6 +411,10 @@ class CstolScriptEngine(ScriptEngine):
         matches = re.match(self.TIMESTAMP_PATTERN, timestamp)
         if matches:
             year, day_of_year, hour, minute, second = matches.groups()
+            if len(hour) == 0:
+                hour = 0
+            if len(minute) == 0:
+                minute = 0
             result = {
                 'hour': int(hour),
                 'minute': int(minute),
@@ -752,9 +769,29 @@ class CstolScriptEngine(ScriptEngine):
         display_screen(*screen_name.split())
 
     def handle_else(self, tokens, lines, line_no):
-        if len(tokens) == 1 and tokens[0] == 'ELSE':
+        goto_endif = False
+        if len(tokens) > 1:
+            # ELSE IF is tricky - We can hit these after a successful IF, or an unsuccessful IF
+            # The if_stack keeps track if an earlier if was successful and its value will determine if we
+            # execute the ELSEIF or just goto the next ENDIF
+            current_if = False
+            if len(self.variables.if_stack) > 0:
+                current_if = self.variables.if_stack[-1]
+            if tokens[0].upper() == 'ELSEIF':
+                if current_if:
+                    goto_endif = True
+                else:
+                    return self.handle_if(tokens, lines, line_no)
+            elif (tokens[0].upper() == 'ELSE' and tokens[1].upper() == 'IF'):
+                if current_if:
+                    goto_endif = True
+                else:
+                    return self.handle_if(tokens[1:], lines, line_no)
+
+        if goto_endif or (len(tokens) == 1 and tokens[0].upper() == 'ELSE'):
             # The only way we ever hit an ELSE is if we were in a successful block beforehand
             # Therefore goto the ENDIF
+            self.variables.if_stack[-1] = True
             depth = 1
             for i in range(line_no, len(lines)):
                 next_line = lines[i].strip().upper()
@@ -766,18 +803,16 @@ class CstolScriptEngine(ScriptEngine):
                         return i + 1
             raise ValueError(f"No matching ENDIF for ELSE command at line {line_no}")
 
-        elif len(tokens) > 1:
-            if tokens[0] == 'ELSEIF':
-                return self.handle_if(tokens, lines, line_no)
-            elif (tokens[0] == 'ELSE' and tokens[1] == 'IF'):
-                return self.handle_if(tokens[1:], lines, line_no)
+        raise ValueError(f"handle_else called with unexpected tokens at line {line_no}")
 
     def handle_end(self, tokens, line_no):
-        if len(tokens) == 1 and tokens[0] == 'END':
+        if len(tokens) == 1 and tokens[0].upper() == 'END':
             raise ValueError(f"Unexpected END command at line {line_no}, expected ENDIF, ENDLOOP, ENDMACRO, or ENDPROC")
-        elif (len(tokens) == 1 and tokens[0] == 'ENDIF') or (tokens[0] == 'END' and tokens[1] == 'IF'):
+        elif (len(tokens) == 1 and tokens[0].upper() == 'ENDIF') or (tokens[0].upper() == 'END' and tokens[1].upper() == 'IF'):
+            # END IF pops the IF stack
+            self.variables.if_stack.pop()
             pass
-        elif (len(tokens) == 1 and tokens[0] == 'ENDLOOP') or (tokens[0] == 'END' and tokens[1] == 'LOOP'):
+        elif (len(tokens) == 1 and tokens[0].upper() == 'ENDLOOP') or (tokens[0].upper() == 'END' and tokens[1].upper() == 'LOOP'):
             if len(self.variables.loop_stack) > 0:
                 loop_info = self.variables.loop_stack[-1]
                 loop_info[2] += 1
@@ -810,17 +845,17 @@ class CstolScriptEngine(ScriptEngine):
         raise ValueError(f"No matching ENDLOOP found for ESCAPE command at line {line_no}")
 
     def handle_go(self, tokens, lines, line_no):
-        if tokens[0] == 'GOTO' or (len(tokens) > 1 and tokens[0] == 'GO' and tokens[1] == 'TO'):
-            if (tokens[0] == 'GOTO' and len(tokens) < 2) or (tokens[0] == 'GO' and tokens[1] != 'TO' and len(tokens) < 3):
+        if tokens[0].upper() == 'GOTO' or (len(tokens) > 1 and tokens[0].upper() == 'GO' and tokens[1].upper() == 'TO'):
+            if (tokens[0].upper() == 'GOTO' and len(tokens) < 2) or (tokens[0].upper() == 'GO' and tokens[1].upper() != 'TO' and len(tokens) < 3):
                 raise ValueError(f"Invalid GOTO command format at line {line_no}")
             label = None
-            if tokens[0] == 'GOTO':
-                label = tokens[1] + ':'
+            if tokens[0].upper() == 'GOTO':
+                label = (tokens[1] + ':').upper()
             else:
-                label = tokens[2] + ':'
+                label = (tokens[2] + ':').upper()
             # Find the label in the lines
             for i in range(1, len(lines)):
-                next_line = lines[i - 1].strip()
+                next_line = lines[i - 1].strip().upper()
                 if next_line.startswith(label):
                     return i
             raise ValueError(f"Label '{label}' not found in GOTO command at line {line_no}")
@@ -835,6 +870,8 @@ class CstolScriptEngine(ScriptEngine):
             raise ValueError(f"Error evaluating expression '{expression_tokens}' in IF command at line {line_no}: {e}")
 
         if result:
+            # Mark if as handled
+            self.variables.if_stack[-1] = True
             return line_no + 1  # Continue to the next line if the condition is true
         # If the condition is false, skip to the next ENDIF or ELSE
         else:
@@ -1166,6 +1203,8 @@ class CstolScriptEngine(ScriptEngine):
                 case "GO" | "GOTO":
                     return self.handle_go(tokens, lines, line_no)
                 case "IF":
+                    # Regular IF starts an if stack
+                    self.variables.if_stack.append(False)
                     return self.handle_if(tokens, lines, line_no)
                 case "LET":
                     self.handle_let(tokens, line_no)
