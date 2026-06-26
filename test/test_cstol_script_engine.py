@@ -31,6 +31,7 @@ class TestCstolVariables:
     def test_init(self):
         variables = CstolVariables()
         assert variables.local_variables == {}
+        assert variables.if_stack == []
         assert variables.loop_stack == []
         assert "$$OWLT" in variables.special_variables
         assert "$$ERROR" in variables.special_variables
@@ -372,8 +373,11 @@ class TestCstolScriptEngine:
     def test_handle_if_true_condition(self):
         tokens = ["IF", "1", "=", "1"]
         lines = ["IF 1 = 1", "  WRITE \"TRUE\"", "ENDIF"]
+        self.engine.variables.if_stack.append(False)  # IF dispatch pushes this
         result = self.engine.handle_if(tokens, lines, 1)
         assert result == 2
+        # A true condition marks the current if as handled
+        assert self.engine.variables.if_stack[-1] is True
 
     def test_handle_if_false_condition(self):
         tokens = ["IF", "1", "=", "2"]
@@ -389,8 +393,11 @@ class TestCstolScriptEngine:
 
     def test_handle_end_endif(self):
         tokens = ["ENDIF"]
+        self.engine.variables.if_stack.append(True)  # IF dispatch pushed this
         result = self.engine.handle_end(tokens, 5)
         assert result == 6
+        # ENDIF pops the if stack
+        assert self.engine.variables.if_stack == []
 
     def test_handle_end_endloop_infinite(self):
         self.engine.variables.loop_stack.append([10, None, 1])
@@ -600,18 +607,21 @@ class TestCstolScriptEngine:
 
     def test_handle_else_simple(self):
         tokens = ["ELSE"]
+        self.engine.variables.if_stack.append(True)  # Reached ELSE from a successful IF
         with pytest.raises(ValueError, match="No matching ENDIF for ELSE"):
             result = self.engine.handle_else(tokens, [], 5)
 
     def test_handle_else_with_endif(self):
         tokens = ["ELSE"]
         lines = ["IF TRUE", "WRITE 'TRUE'", "ELSE", "WRITE 'HELLO'", "ENDIF"]
+        self.engine.variables.if_stack.append(True)
         result = self.engine.handle_else(tokens, lines, 3)
         assert result == 5
 
     def test_handle_else_elseif(self):
         tokens = ["ELSEIF", "1", "=", "1"]
         lines = ["ELSEIF 1 = 1", "  WRITE \"TRUE\"", "ENDIF"]
+        self.engine.variables.if_stack.append(False)  # Prior IF was not taken
         result = self.engine.handle_else(tokens, lines, 1)
         assert result == 2
 
@@ -624,6 +634,7 @@ class TestCstolScriptEngine:
     def test_handle_else_else_if(self):
         tokens = ["ELSE", "IF", "1", "=", "1"]
         lines = ["ELSE IF 1 = 1", "  WRITE \"TRUE\"", "ENDIF"]
+        self.engine.variables.if_stack.append(False)  # Prior IF was not taken
         result = self.engine.handle_else(tokens, lines, 1)
         assert result == 2
 
@@ -645,9 +656,29 @@ class TestCstolScriptEngine:
             self.engine.handle_declare(tokens, 1)
 
     def test_handle_loop_invalid_format(self):
+        # A non-evaluable count must still raise (now as an expression error)
         tokens = ["LOOP", "5", "extra"]
-        with pytest.raises(ValueError, match="Invalid LOOP command format"):
+        with pytest.raises(ValueError):
             self.engine.handle_loop(tokens, 1)
+
+    def test_handle_loop_variable_count(self):
+        # The loop count may be a variable
+        self.engine.variables.set_local_variable("$N", 4)
+        result = self.engine.handle_loop(["LOOP", "$N"], 10)
+        assert result == 11
+        assert self.engine.variables.loop_stack[0] == [11, 4, 1]
+
+    def test_handle_loop_expression_count(self):
+        # The loop count may be an expression
+        self.engine.variables.set_local_variable("$N", 4)
+        result = self.engine.handle_loop(["LOOP", "$N", "+", "1"], 10)
+        assert result == 11
+        assert self.engine.variables.loop_stack[0] == [11, 5, 1]
+
+    def test_handle_loop_float_count_truncated(self):
+        # A float count is truncated to an integer
+        result = self.engine.handle_loop(["LOOP", "3.9"], 10)
+        assert self.engine.variables.loop_stack[0] == [11, 3, 1]
 
     def test_handle_proc_invalid_variable_with_comma(self):
         tokens = ["PROC", "TEST_PROC", "$VAR1,", "VAR2"]
@@ -1335,25 +1366,32 @@ class TestCstolScriptEngine:
         assert result == '"already_quoted"'
 
     def test_build_python_expression_radix_types(self):
-        tokens = ["O#10"]
-        result = self.engine.build_python_expression(tokens)
-        assert result == "0o10"
+        # Each base is converted to its decimal integer value
+        assert self.engine.build_python_expression(["O#10"]) == "8"
+        assert self.engine.build_python_expression(["B#10"]) == "2"
+        assert self.engine.build_python_expression(["D#10"]) == "10"
+        assert self.engine.build_python_expression(["X#10"]) == "16"
+        # H# produces a raw byte buffer rather than an integer
+        assert self.engine.build_python_expression(["H#10"]) == "b'\\x10'"
 
-        tokens = ["B#10"]
-        result = self.engine.build_python_expression(tokens)
-        assert result == "0b10"
+    def test_build_python_expression_hex_radix_with_letters(self):
+        # Hex digits A-F must parse (previously these fell through to strings)
+        assert self.engine.build_python_expression(["X#FF"]) == "255"
+        assert self.engine.build_python_expression(["X#1A"]) == "26"
+        assert self.engine.build_python_expression(["x#ff"]) == "255"
+        assert self.engine.build_python_expression(["H#DEADBEEF"]) == str(b'\xde\xad\xbe\xef')
 
-        tokens = ["D#10"]
-        result = self.engine.build_python_expression(tokens)
-        assert result == "10"
+    def test_evaluate_expression_radix_values(self):
+        # The emitted forms must evaluate to the correct numbers
+        assert self.engine.evaluate_expression(["X#FF"]) == 255
+        assert self.engine.evaluate_expression(["B#101"]) == 5
+        assert self.engine.evaluate_expression(["O#17"]) == 15
+        assert self.engine.evaluate_expression(["X#10", "+", "B#10"]) == 18
 
-        tokens = ["X#10"]
-        result = self.engine.build_python_expression(tokens)
-        assert result == "0x10"
-
-        tokens = ["H#10"]
-        result = self.engine.build_python_expression(tokens)
-        assert result == "b'\\x10'"
+    def test_build_python_expression_invalid_radix_digits(self):
+        # Digits outside the base must raise rather than emit invalid syntax
+        with pytest.raises(ValueError):
+            self.engine.build_python_expression(["B#9"])
 
     def test_eval_function(self):
         tokens = ["EVAL", "(", "print('hello')", ")"]
@@ -1373,6 +1411,7 @@ class TestCstolScriptEngine:
     def test_else_with_nested_if(self):
         tokens = ["ELSE"]
         lines = ["IF 1", "WRITE 1", "ELSE", "IF 2", "WRITE 2", "ENDIF", "ENDIF"]
+        self.engine.variables.if_stack.append(True)
         result = self.engine.handle_else(tokens, lines, 3)
         assert result == 7
 
@@ -1420,3 +1459,429 @@ class TestCstolScriptEngine:
     def test_run_line_label(self):
         result = self.engine.run_line("LABEL:", [], "test.txt", 1)
         assert result == 2
+
+    # -------------------------------------------------------------------------
+    # Tests for commit "Handle multiple token comparisons. Fix else if logic
+    # and case sensitivity. Handle wait :: syntax"
+    # -------------------------------------------------------------------------
+
+    # --- Multi-part operator token recombination in cstol_tokenizer ---
+
+    def test_cstol_tokenizer_recombines_power_operator(self):
+        # ** must be recombined into a single token, not split into * *
+        result = self.engine.cstol_tokenizer("LET $A = 2 ** 3")
+        assert result == ["LET", "$A", "=", "2", "**", "3"]
+
+    def test_cstol_tokenizer_recombines_less_than_equal(self):
+        result = self.engine.cstol_tokenizer("IF $A <= 5")
+        assert result == ["IF", "$A", "<=", "5"]
+
+    def test_cstol_tokenizer_recombines_greater_than_equal(self):
+        result = self.engine.cstol_tokenizer("IF $A >= 5")
+        assert result == ["IF", "$A", ">=", "5"]
+
+    def test_cstol_tokenizer_recombines_not_equal(self):
+        # /= is CSTOL's not-equal operator and must not be split into / =
+        result = self.engine.cstol_tokenizer("IF $A /= 5")
+        assert result == ["IF", "$A", "/=", "5"]
+
+    def test_cstol_tokenizer_preserves_single_comparison_operators(self):
+        # A lone < or > (not followed by =) stays a single token
+        assert self.engine.cstol_tokenizer("IF $A < 5") == ["IF", "$A", "<", "5"]
+        assert self.engine.cstol_tokenizer("IF $A > 5") == ["IF", "$A", ">", "5"]
+
+    def test_cstol_tokenizer_preserves_single_divide_and_multiply(self):
+        # A lone / or * (not part of /= or **) is unchanged
+        assert self.engine.cstol_tokenizer("LET $A = 6 / 2") == ["LET", "$A", "=", "6", "/", "2"]
+        assert self.engine.cstol_tokenizer("LET $A = 2 * 3") == ["LET", "$A", "=", "2", "*", "3"]
+
+    def test_cstol_tokenizer_multiple_comparisons_one_line(self):
+        # Several multi-part operators recombined in one expression
+        result = self.engine.cstol_tokenizer("IF $A <= 5 AND $B >= 2 OR $C /= 3")
+        assert result == ["IF", "$A", "<=", "5", "AND", "$B", ">=", "2", "OR", "$C", "/=", "3"]
+
+    def test_cstol_tokenizer_operator_at_end_of_line(self):
+        # Operator token with no following token must not crash (i + 1 bounds check)
+        result = self.engine.cstol_tokenizer("IF $A <")
+        assert result == ["IF", "$A", "<"]
+
+    # --- Timestamps with empty hour/minute fields (wait :: syntax) ---
+
+    def test_parse_timestamp_empty_hour(self):
+        # :30:00 -> 30 minutes
+        assert self.engine.parse_timestamp(":30:00") == 1800.0
+
+    def test_parse_timestamp_empty_minute(self):
+        # 12::00 -> 12 hours
+        assert self.engine.parse_timestamp("12::00") == 43200.0
+
+    def test_parse_timestamp_empty_hour_and_minute(self):
+        # ::30 -> 30 seconds
+        assert self.engine.parse_timestamp("::30") == 30.0
+
+    @mock.patch('cstol_script_engine.wait')
+    def test_handle_wait_empty_hour_minute(self, mock_wait):
+        # WAIT ::30 should wait 30 seconds
+        tokens = ["WAIT", "::30"]
+        self.engine.handle_wait(tokens, 1)
+        mock_wait.assert_called_once_with(30.0)
+
+    # --- if_stack mechanism (ELSE IF logic) ---
+
+    def test_variables_init_has_if_stack(self):
+        variables = CstolVariables()
+        assert variables.if_stack == []
+
+    def test_run_line_if_pushes_if_stack(self):
+        # The IF dispatch must push a False entry onto the if_stack
+        with mock.patch.object(self.engine, 'handle_if', return_value=2):
+            self.engine.run_line("IF $VAR = 1", [], "test.txt", 1)
+        assert self.engine.variables.if_stack == [False]
+
+    def test_handle_if_false_does_not_mark_stack(self):
+        # A false IF must leave the stack entry False so a later ELSE IF runs
+        tokens = ["IF", "1", "=", "2"]
+        lines = ["IF 1 = 2", "  WRITE \"TRUE\"", "ENDIF"]
+        self.engine.variables.if_stack.append(False)
+        result = self.engine.handle_if(tokens, lines, 1)
+        assert result == 3
+        assert self.engine.variables.if_stack[-1] is False
+
+    def test_handle_else_marks_stack_handled(self):
+        # Reaching a plain ELSE means we came from a successful block; mark handled
+        tokens = ["ELSE"]
+        lines = ["IF 1", "WRITE 1", "ELSE", "WRITE 2", "ENDIF"]
+        self.engine.variables.if_stack.append(True)
+        result = self.engine.handle_else(tokens, lines, 3)
+        assert result == 5
+        assert self.engine.variables.if_stack[-1] is True
+
+    def test_handle_else_elseif_when_prior_if_taken_skips_to_endif(self):
+        # If an earlier branch already ran (stack True), ELSE IF jumps to ENDIF
+        # instead of re-evaluating its condition
+        tokens = ["ELSEIF", "1", "=", "1"]
+        lines = ["ELSEIF 1 = 1", "  WRITE \"TRUE\"", "ENDIF"]
+        self.engine.variables.if_stack.append(True)
+        result = self.engine.handle_else(tokens, lines, 1)
+        # Skips past the body to the line after ENDIF
+        assert result == 3
+
+    def test_handle_else_else_if_when_prior_if_taken_skips_to_endif(self):
+        # Same as above for the two-token "ELSE IF" spelling
+        tokens = ["ELSE", "IF", "1", "=", "1"]
+        lines = ["ELSE IF 1 = 1", "  WRITE \"TRUE\"", "ENDIF"]
+        self.engine.variables.if_stack.append(True)
+        result = self.engine.handle_else(tokens, lines, 1)
+        assert result == 3
+
+    def test_handle_else_elseif_when_prior_if_not_taken_evaluates(self):
+        # If no earlier branch ran (stack False), ELSE IF evaluates its condition
+        tokens = ["ELSEIF", "1", "=", "2"]
+        lines = ["ELSEIF 1 = 2", "  WRITE \"TRUE\"", "ENDIF"]
+        self.engine.variables.if_stack.append(False)
+        result = self.engine.handle_else(tokens, lines, 1)
+        # Condition false -> skip to ENDIF
+        assert result == 3
+
+    def test_handle_else_unexpected_tokens_raises(self):
+        # ELSE followed by something other than IF and not a plain ELSE
+        tokens = ["ELSE", "FOO"]
+        self.engine.variables.if_stack.append(False)
+        with pytest.raises(ValueError, match="handle_else called with unexpected tokens"):
+            self.engine.handle_else(tokens, [], 1)
+
+    def test_handle_end_endif_pops_if_stack(self):
+        self.engine.variables.if_stack.append(True)
+        result = self.engine.handle_end(["ENDIF"], 5)
+        assert result == 6
+        assert self.engine.variables.if_stack == []
+
+    def test_handle_end_end_if_two_tokens_pops_if_stack(self):
+        # "END IF" spelling also pops the stack
+        self.engine.variables.if_stack.append(True)
+        result = self.engine.handle_end(["END", "IF"], 5)
+        assert result == 6
+        assert self.engine.variables.if_stack == []
+
+    def test_if_else_if_integration_first_branch_taken(self):
+        # Full IF / ELSE IF / ELSE / ENDIF walk-through using the dispatcher.
+        # First IF is true: run its body, then ELSE IF must skip to ENDIF.
+        lines = [
+            "IF 1 = 1",          # 0
+            "  WRITE 'A'",       # 1
+            "ELSE IF 1 = 1",     # 2
+            "  WRITE 'B'",       # 3
+            "ELSE",              # 4
+            "  WRITE 'C'",       # 5
+            "ENDIF",             # 6
+        ]
+        # IF 1 = 1 -> true, continue to next line
+        assert self.engine.run_line(lines[0], lines, "t", 1) == 2
+        assert self.engine.variables.if_stack == [True]
+        # ELSE IF reached after the taken branch -> jump past to ENDIF (line 7)
+        assert self.engine.run_line(lines[2], lines, "t", 3) == 7
+        # ENDIF pops the stack
+        assert self.engine.run_line(lines[6], lines, "t", 7) == 8
+        assert self.engine.variables.if_stack == []
+
+    def test_if_else_if_integration_second_branch_taken(self):
+        # First IF is false, the ELSE IF condition is true.
+        lines = [
+            "IF 1 = 2",          # 0
+            "  WRITE 'A'",       # 1
+            "ELSE IF 1 = 1",     # 2
+            "  WRITE 'B'",       # 3
+            "ENDIF",             # 4
+        ]
+        # IF 1 = 2 false -> skip to the ELSE IF line (line 3, 1-based)
+        assert self.engine.run_line(lines[0], lines, "t", 1) == 3
+        assert self.engine.variables.if_stack == [False]
+        # ELSE IF 1 = 1 true -> continue into its body
+        assert self.engine.run_line(lines[2], lines, "t", 3) == 4
+        assert self.engine.variables.if_stack == [True]
+
+    # --- Case-insensitivity of control-flow keywords ---
+
+    def test_handle_go_goto_lowercase_keyword(self):
+        tokens = ["goto", "label1"]
+        lines = ["", "LABEL1:", ""]
+        assert self.engine.handle_go(tokens, lines, 0) == 2
+
+    def test_handle_go_go_to_lowercase_keyword(self):
+        tokens = ["go", "to", "label1"]
+        lines = ["", "LABEL1:", ""]
+        assert self.engine.handle_go(tokens, lines, 0) == 2
+
+    def test_handle_go_label_case_insensitive(self):
+        # Lower-case label token matches an upper-case label in the source
+        tokens = ["GOTO", "MyLabel"]
+        lines = ["", "MYLABEL:", ""]
+        assert self.engine.handle_go(tokens, lines, 0) == 2
+
+    def test_handle_end_endif_lowercase(self):
+        self.engine.variables.if_stack.append(True)
+        assert self.engine.handle_end(["endif"], 5) == 6
+        assert self.engine.variables.if_stack == []
+
+    def test_handle_end_endloop_lowercase(self):
+        self.engine.variables.loop_stack.append([10, None, 1])
+        assert self.engine.handle_end(["endloop"], 15) == 10
+
+    def test_handle_else_lowercase(self):
+        tokens = ["else"]
+        lines = ["IF 1", "WRITE 1", "else", "WRITE 2", "endif"]
+        self.engine.variables.if_stack.append(True)
+        assert self.engine.handle_else(tokens, lines, 3) == 5
+
+    def test_handle_escape_lowercase_endloop(self):
+        # ESCAPE must find a lowercase endloop just like the upper-case form
+        lines = ["", "loop", "", "escape", "", "endloop", ""]
+        result = self.engine.handle_escape(["ESCAPE"], lines, 4)
+        assert result == 6
+
+    def test_handle_escape_lowercase_end_loop(self):
+        # Two-word "end loop" in lower case must also be matched
+        lines = ["", "loop", "", "escape", "", "end loop", ""]
+        result = self.engine.handle_escape(["ESCAPE"], lines, 4)
+        assert result == 6
+
+    def test_handle_escape_lowercase_nested_loop(self):
+        # Lower-case nested loops must be depth-counted correctly
+        lines = ["loop", "write 1", "escape", "loop", "write 2", "endloop", "endloop"]
+        result = self.engine.handle_escape(["ESCAPE"], lines, 3)
+        assert result == 7
+
+    def test_build_python_expression_lowercase_raw(self):
+        # Lower-case "raw" must still produce a RAW tlm() call
+        tokens = ['raw', 'SPACECRAFT', 'TEMPERATURE']
+        result = self.engine.build_python_expression(tokens)
+        assert result == 'tlm("SPACECRAFT", "LATEST", "TEMPERATURE", type="RAW")'
+
+    def test_special_variable_set_get_lowercase(self):
+        # Setting a special variable with a lower-case name must be readable
+        # via either case and update the canonical upper-case entry
+        self.engine.variables.set_special_variable("$$owlt", 5.0)
+        assert self.engine.variables.get_special_variable("$$owlt") == 5.0
+        assert self.engine.variables.get_special_variable("$$OWLT") == 5.0
+
+    # --- ELSEIF / "ELSE IF" symmetry ---
+    # Both spellings must behave identically across all branches. The single-token
+    # "ELSEIF" and the two-token "ELSE IF" are tested in matching pairs below.
+
+    def test_handle_else_else_if_false(self):
+        # Mirror of test_handle_else_elseif_false for the two-token "ELSE IF":
+        # prior IF not taken, condition is false -> skip to ENDIF
+        tokens = ["ELSE", "IF", "1", "=", "2"]
+        lines = ["ELSE IF 1 = 2", "  WRITE \"TRUE\"", "ENDIF"]
+        result = self.engine.handle_else(tokens, lines, 1)
+        assert result == 3
+
+    def test_handle_else_elseif_lowercase(self):
+        # Lower-case single-token "elseif", prior IF not taken, condition true
+        tokens = ["elseif", "1", "=", "1"]
+        lines = ["elseif 1 = 1", "  write \"true\"", "endif"]
+        self.engine.variables.if_stack.append(False)
+        assert self.engine.handle_else(tokens, lines, 1) == 2
+
+    def test_handle_else_else_if_lowercase(self):
+        # Lower-case two-token "else if", prior IF not taken, condition true
+        tokens = ["else", "if", "1", "=", "1"]
+        lines = ["else if 1 = 1", "  write \"true\"", "endif"]
+        self.engine.variables.if_stack.append(False)
+        assert self.engine.handle_else(tokens, lines, 1) == 2
+
+    def test_handle_else_elseif_lowercase_prior_if_taken(self):
+        # Lower-case "elseif" after a taken branch must jump to the ENDIF
+        tokens = ["elseif", "1", "=", "1"]
+        lines = ["elseif 1 = 1", "  write \"true\"", "endif"]
+        self.engine.variables.if_stack.append(True)
+        assert self.engine.handle_else(tokens, lines, 1) == 3
+
+    def test_handle_else_else_if_lowercase_prior_if_taken(self):
+        # Lower-case "else if" after a taken branch must jump to the ENDIF
+        tokens = ["else", "if", "1", "=", "1"]
+        lines = ["else if 1 = 1", "  write \"true\"", "endif"]
+        self.engine.variables.if_stack.append(True)
+        assert self.engine.handle_else(tokens, lines, 1) == 3
+
+    # --- Case-insensitive local variables ---
+
+    def test_set_get_local_variable_case_insensitive(self):
+        # Storing under one case must be retrievable via any case
+        self.engine.variables.set_local_variable("$Foo", 42)
+        assert self.engine.variables.get_local_variable("$FOO") == 42
+        assert self.engine.variables.get_local_variable("$foo") == 42
+        assert self.engine.variables.get_local_variable("$Foo") == 42
+        # Stored under the normalized upper-case key
+        assert self.engine.variables.local_variables == {"$FOO": 42}
+
+    def test_get_local_variable_missing_returns_none(self):
+        assert self.engine.variables.get_local_variable("$MISSING") is None
+
+    def test_declare_then_reference_different_case(self):
+        # DECLARE in one case, reference in another within an expression
+        self.engine.handle_declare(["DECLARE", "VARIABLE", "$MyVar", "=", "5"], 1)
+        result = self.engine.evaluate_expression(["$myvar", "+", "$MYVAR"])
+        assert result == 10
+
+    def test_let_then_reference_different_case(self):
+        # LET assigns, a differently-cased reference reads the same value
+        self.engine.handle_let(["LET", "$Counter", "=", "7"], 1)
+        assert self.engine.evaluate_expression(["$COUNTER"]) == 7
+        # Re-assigning with yet another case updates the same variable
+        self.engine.handle_let(["LET", "$counter", "=", "9"], 1)
+        assert self.engine.evaluate_expression(["$Counter"]) == 9
+        assert self.engine.variables.local_variables == {"$COUNTER": 9}
+
+    @mock.patch('cstol_script_engine.ask_string')
+    def test_ask_then_reference_different_case(self, mock_ask):
+        # ASK stores the answer; a differently-cased reference reads it
+        mock_ask.return_value = '"hello"'
+        self.engine.handle_ask(["ASK", "$Answer", '"Question?"'], 1)
+        assert self.engine.evaluate_expression(["$ANSWER"]) == "hello"
+
+    # --- Single-word vs two-word keyword equivalence ---
+    # Keywords that may be written as one word or split into two words must
+    # behave identically for both spellings (and in either case).
+
+    # END IF (two-word) mirrors of the single-word ENDIF tests above
+    def test_handle_end_end_if_two_word(self):
+        self.engine.variables.if_stack.append(True)
+        result = self.engine.handle_end(["END", "IF"], 5)
+        assert result == 6
+        assert self.engine.variables.if_stack == []
+
+    def test_handle_end_end_if_lowercase(self):
+        self.engine.variables.if_stack.append(True)
+        result = self.engine.handle_end(["end", "if"], 5)
+        assert result == 6
+        assert self.engine.variables.if_stack == []
+
+    # END LOOP (two-word) mirrors of the single-word ENDLOOP tests above
+    def test_handle_end_end_loop_two_word_infinite(self):
+        self.engine.variables.loop_stack.append([10, None, 1])
+        result = self.engine.handle_end(["END", "LOOP"], 15)
+        assert result == 10
+
+    def test_handle_end_end_loop_two_word_counted(self):
+        self.engine.variables.loop_stack.append([10, 3, 1])
+        result = self.engine.handle_end(["END", "LOOP"], 15)
+        assert result == 10
+        assert self.engine.variables.loop_stack[0][1] == 2
+
+    def test_handle_end_end_loop_two_word_count_finished(self):
+        self.engine.variables.loop_stack.append([10, 1, 1])
+        result = self.engine.handle_end(["END", "LOOP"], 15)
+        assert result == 16
+        assert len(self.engine.variables.loop_stack) == 0
+
+    def test_handle_end_end_loop_lowercase(self):
+        self.engine.variables.loop_stack.append([10, None, 1])
+        result = self.engine.handle_end(["end", "loop"], 15)
+        assert result == 10
+
+    # ENDMACRO / END MACRO are accepted as no-ops in both spellings
+    def test_handle_end_endmacro_single_word(self):
+        assert self.engine.handle_end(["ENDMACRO"], 5) == 6
+
+    def test_handle_end_end_macro_two_word(self):
+        assert self.engine.handle_end(["END", "MACRO"], 5) == 6
+
+    def test_handle_end_end_macro_lowercase(self):
+        assert self.engine.handle_end(["end", "macro"], 5) == 6
+
+    # ENDPROC / END PROC are accepted as no-ops in both spellings
+    def test_handle_end_endproc_single_word(self):
+        assert self.engine.handle_end(["ENDPROC"], 5) == 6
+
+    def test_handle_end_end_proc_two_word(self):
+        assert self.engine.handle_end(["END", "PROC"], 5) == 6
+
+    def test_handle_end_end_proc_lowercase(self):
+        assert self.engine.handle_end(["end", "proc"], 5) == 6
+
+    # GO TO (two-word) error paths, mirroring the GOTO error tests above
+    def test_handle_go_to_label_not_found(self):
+        tokens = ["GO", "TO", "MISSING"]
+        lines = ["", "LABEL1:", ""]
+        with pytest.raises(ValueError, match="Label 'MISSING:' not found"):
+            self.engine.handle_go(tokens, lines, 0)
+
+    def test_handle_go_to_invalid_format(self):
+        # "GO TO" with no label must raise a clean ValueError, not IndexError
+        tokens = ["GO", "TO"]
+        with pytest.raises(ValueError, match="Invalid GOTO command format"):
+            self.engine.handle_go(tokens, lines=[], line_no=1)
+
+    # --- ESCAPE must not mistake a label for the LOOP keyword ---
+
+    def test_handle_escape_ignores_loop_prefixed_label(self):
+        # A label like "LOOPBACK:" in the scan range must not be counted as a
+        # nested LOOP (it precedes the real ENDLOOP). ESCAPE is on line 2.
+        lines = ["LOOP", "ESCAPE", "LOOPBACK:", "ENDLOOP", "WRITE done"]
+        result = self.engine.handle_escape(["ESCAPE"], lines, 2)
+        assert result == 4
+
+    def test_handle_escape_counts_loop_with_count(self):
+        # "LOOP 5" is still recognized as a nested loop keyword
+        lines = ["LOOP", "ESCAPE", "LOOP 5", "WRITE 1", "ENDLOOP", "ENDLOOP"]
+        result = self.engine.handle_escape(["ESCAPE"], lines, 2)
+        assert result == 6
+
+    # --- Empty expression / answer input guards ---
+
+    def test_handle_check_empty_expression_raises(self):
+        # A leading comma yields an empty expression -> clean error, not IndexError
+        with pytest.raises(ValueError, match="Empty expression in CHECK command"):
+            self.engine.handle_check(["CHECK", ",", "1"], 1)
+
+    def test_handle_write_empty_expression_raises(self):
+        with pytest.raises(ValueError, match="Empty expression in WRITE command"):
+            self.engine.handle_write(["WRITE", ",", "1"], 1)
+
+    @mock.patch('cstol_script_engine.ask_string')
+    def test_handle_ask_empty_answer(self, mock_ask):
+        # An empty answer must store cleanly rather than raising IndexError
+        mock_ask.return_value = ""
+        self.engine.handle_ask(["ASK", "$VAR", '"Question?"'], 1)
+        assert self.engine.variables.get_local_variable("$VAR") == ""
