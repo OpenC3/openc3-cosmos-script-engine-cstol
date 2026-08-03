@@ -774,6 +774,48 @@ class TestCstolScriptEngine:
         with pytest.raises(ValueError, match="Invalid timestamp format"):
             self.engine.handle_wait(tokens, 1)
 
+    @mock.patch('cstol_script_engine.wait_expression')
+    def test_handle_wait_boolean_or_with_or_for_timeout(self, mock_wait_expr):
+        """WAIT ($A = 1) OR ($B = 1) OR FOR 00:00:02 -- boolean OR + timeout."""
+        mock_wait_expr.return_value = True
+        self.engine.variables.local_variables["$A"] = 1
+        self.engine.variables.local_variables["$B"] = 0
+        # Tokens after continuation-line joining:
+        tokens = ["WAIT", "(", "$A", "=", "1", ")", "OR", "(", "$B", "=", "1", ")", "OR", "FOR", "00:00:02"]
+        self.engine.handle_wait(tokens, 1)
+        # The condition should include the boolean OR; timeout should be 2 seconds
+        mock_wait_expr.assert_called_once()
+        call_args = mock_wait_expr.call_args
+        assert call_args[0][1] == 2  # 2 seconds timeout
+        assert self.engine.variables.get_special_variable("$$ERROR") == "NO_ERROR"
+
+    @mock.patch('cstol_script_engine.wait_expression')
+    def test_handle_wait_boolean_or_no_timeout(self, mock_wait_expr):
+        """WAIT ($A = 1) OR ($B = 1) -- boolean OR, no timeout clause."""
+        mock_wait_expr.return_value = True
+        self.engine.variables.local_variables["$A"] = 1
+        self.engine.variables.local_variables["$B"] = 0
+        tokens = ["WAIT", "(", "$A", "=", "1", ")", "OR", "(", "$B", "=", "1", ")"]
+        self.engine.handle_wait(tokens, 1)
+        # No timeout -> effective infinite wait
+        mock_wait_expr.assert_called_once()
+        call_args = mock_wait_expr.call_args
+        assert call_args[0][1] == 1000000000  # infinite wait
+        assert self.engine.variables.get_special_variable("$$ERROR") == "NO_ERROR"
+
+    @mock.patch('cstol_script_engine.wait_expression')
+    def test_handle_wait_and_condition_with_or_for(self, mock_wait_expr):
+        """WAIT ($A = 1) AND ($B = 0) OR FOR 00:00:02 -- AND-joined condition + timeout."""
+        mock_wait_expr.return_value = True
+        self.engine.variables.local_variables["$A"] = 1
+        self.engine.variables.local_variables["$B"] = 0
+        tokens = ["WAIT", "(", "$A", "=", "1", ")", "AND", "(", "$B", "=", "0", ")", "OR", "FOR", "00:00:02"]
+        self.engine.handle_wait(tokens, 1)
+        mock_wait_expr.assert_called_once()
+        call_args = mock_wait_expr.call_args
+        assert call_args[0][1] == 2  # 2 seconds timeout
+        assert self.engine.variables.get_special_variable("$$ERROR") == "NO_ERROR"
+
     def test_handle_cmd_malformed_to(self):
         tokens = ["SET", "TARGET1", "TO", "42", "extra"]
         with pytest.raises(ValueError, match="Error evaluating expression"):

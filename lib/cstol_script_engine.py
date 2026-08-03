@@ -514,6 +514,29 @@ class CstolScriptEngine(ScriptEngine):
             expressions.append(expression)
         return expressions
 
+    def _split_wait_timeout(self, tokens):
+        """Split WAIT body tokens into (condition_tokens, timeout_tokens | None).
+
+        Scans from the end of the token list looking for the last ``OR``
+        that is immediately followed by ``FOR`` or ``UNTIL``. That ``OR``
+        marks the boundary between the boolean condition and the timeout
+        clause.
+
+        Returns
+        -------
+        (condition_tokens, timeout_tokens)
+            *timeout_tokens* includes the ``FOR``/``UNTIL`` keyword and the
+            value that follows.  If no ``OR FOR`` / ``OR UNTIL`` sequence is
+            found the full token list is returned as the condition and
+            *timeout_tokens* is ``None``.
+        """
+        # Walk backwards so we find the last OR FOR / OR UNTIL (before the timeout).
+        # Earlier OR tokens are boolean operators inside the condition.
+        for i in range(len(tokens) - 1, 0, -1):
+            if tokens[i - 1].upper() == "OR" and tokens[i].upper() in ("FOR", "UNTIL"):
+                return tokens[:i - 1], tokens[i:]
+        return tokens, None
+
     def split_vs_tokens_on_colon(self, tokens):
         """
         Split tokens on colons for VS clause processing, but preserve timestamps.
@@ -1088,11 +1111,11 @@ class CstolScriptEngine(ScriptEngine):
                 raise ValueError(f"Invalid timestamp format at line {line_no}")
         else:
             # Conditional expression wait
-            expressions = self.extract_expressions(tokens[1:], seperator="OR")
-            python_expression = self.build_python_expression(expressions[0])
-            if len(expressions) > 1:
+            condition_tokens, timeout_tokens = self._split_wait_timeout(tokens[1:])
+            python_expression = self.build_python_expression(condition_tokens)
+            if timeout_tokens is not None:
                 # Timeout given with "OR FOR" or "OR UNTIL"
-                seconds = self.evaluate_expression(expressions[1][1:]) # Drop assumed FOR or UNTIL token
+                seconds = self.evaluate_expression(timeout_tokens[1:]) # Drop FOR or UNTIL token
                 if isinstance(seconds, (int, float, complex)) and not isinstance(seconds, bool):
                     if seconds > self.ONE_YEAR_SECONDS:
                         now = datetime.datetime.now().timestamp()
