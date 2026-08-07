@@ -1,0 +1,83 @@
+[project]
+name = "openc3-cosmos-script-engine-cstol-python"
+version = "1.2.0"
+description = "CSTOL script engine for OpenC3 COSMOS Script Runner"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.uv]
+package = false
+default-groups = []
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--tb=short",
+    "--cov=lib",
+    "--cov-report=term-missing",
+    "--cov-report=html",
+    "--cov-fail-under=80",
+]
+
+[tool.coverage.run]
+source = ["lib"]
+omit = ["*/test/*", "*/.venv/*", "*/__pycache__/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if self.debug:",
+    "if settings.DEBUG",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if 0:",
+    "if __name__ == .__main__.:",
+    "class .*\\bProtocol\\):",
+    "@(abc\\.)?abstractmethod",
+]
+
+[tool.coverage.html]
+directory = "htmlcov"
+skip_covered = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.ty.environment]
+python-version = "3.12"
+extra-paths = ["lib"]
+
+[tool.ty.rules]
+# openc3.script re-exports its API through star imports (from .telemetry import *,
+# etc.) with no __all__, so ty cannot see tlm, send_raw, connect_interface or
+# disconnect_interface even though they resolve at runtime.
+unresolved-import = "warn"
+# Script Runner replaces openc3.script.start() at runtime with the running_script.py
+# implementation, which accepts bind_variables. The pip package only ships the
+# stub signature start(procedure_name).
+unknown-argument = "warn"
+# parse_timestamp builds a heterogeneous dict of int/float components, so ty widens
+# every lookup to float even where the value is always an int (e.g. year).
+invalid-argument-type = "warn"
+# CstolVariables.special_variables intentionally holds mixed float/str values, which
+# ty widens to `float | str` for every lookup.
+unsupported-operator = "warn"
+
+[dependency-groups]
+dev = [
+    "ty>=0.0.1a7",
+    "pytest>=9.0.1",
+    "pytest-cov>=7.0.0",
+    "ruff>=0.14.8",
+    "openc3",            # Only needed for development/testing; provided by COSMOS at runtime
+]
