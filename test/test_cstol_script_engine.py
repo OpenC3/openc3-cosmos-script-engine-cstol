@@ -419,6 +419,13 @@ class TestCstolScriptEngine:
         assert result == 16
         assert len(self.engine.variables.loop_stack) == 0
 
+    def test_handle_end_endloop_without_loop(self):
+        # An ENDLOOP with nothing on the loop stack just continues to the next line
+        tokens = ["ENDLOOP"]
+        result = self.engine.handle_end(tokens, 15)
+        assert result == 16
+        assert self.engine.variables.loop_stack == []
+
     def test_handle_end_unexpected(self):
         tokens = ["END"]
         with pytest.raises(ValueError, match="Unexpected END command"):

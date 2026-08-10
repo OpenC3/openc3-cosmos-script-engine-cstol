@@ -47,6 +47,45 @@ from openc3.script import (
 from openc3.script.exceptions import CheckError, StopScriptError
 from openc3.script_engines.script_engine import ScriptEngine
 
+# Pieces of a yyyy/doy-HH:MM:SS timestamp. The tokenizer splits timestamps on '/'
+# and '-', so cstol_tokenizer uses these to stitch the pieces back together.
+YEAR_PATTERN = re.compile(r"^\d{4}$")
+DAY_OF_YEAR_PATTERN = re.compile(r"^\d{1,3}$")
+CLOCK_TIME_PATTERN = re.compile(r"^\d{1,2}:\d{1,2}:\d{1,2}\.?\d*$")
+
+SPECIAL_VARIABLE_PREFIX = "$$"
+
+# CSTOL %<format> specifiers, mapped to the Python format spec that implements them.
+# %X or %x Output in hexadecimal values
+# %O or %o Output in octal values
+# %B or %b Output in binary values
+# %I or %i Output in decimal values
+# %D or %d Output in decimal values
+# The five above convert the value to an integer prior to applying the format.
+# %F or %f Output in floating point values Default for integer or raw value
+# %E or %e Output in floating point values Default for float or EU value
+INTEGER_FORMATS = {"X": "X", "O": "o", "B": "b", "I": "d", "D": "d"}
+FLOAT_FORMATS = {"F": ".6f", "E": ".6e"}
+
+
+class SpecialVars:
+    """
+    Names of the special ($$) variables the engine reads or writes itself. Scripts
+    can reference any special variable by name, these are only the ones referenced
+    from Python code.
+    """
+
+    OWLT = "$$OWLT"
+    ERROR = "$$ERROR"
+    CHECK_INTERVAL = "$$CHECK_INTERVAL"
+    STEP_INTERVAL = "$$STEP_INTERVAL"
+    CLP_STP_INTERVAL = "$$CLP_STP_INTERVAL"
+    CLP_STEP_MODE = "$$CLP_STEP_MODE"
+    STEP_MODE = "$$STEP_MODE"
+    CURRENT_TIME = "$$CURRENT_TIME"
+    SC_TIME = "$$SC_TIME"
+    LOOP_COUNT = "$$LOOP_COUNT"
+
 
 class CstolVariables:
     # NOTE: special_variables is INTENTIONALLY a class-level (shared) dictionary.
@@ -56,13 +95,13 @@ class CstolVariables:
     # be shared by all instances. Do NOT move this into __init__ or copy it per
     # instance - that would break the intended global behavior.
     special_variables = {
-        "$$OWLT": 0.0,
-        "$$ERROR": "NO_ERROR",
-        "$$CHECK_INTERVAL": 1.0,
-        "$$STEP_INTERVAL": 0.1,
-        "$$CLP_STP_INTERVAL": 0.1,
-        "$$CLP_STEP_MODE": "PAUSE",
-        "$$STEP_MODE": "PAUSE",
+        SpecialVars.OWLT: 0.0,
+        SpecialVars.ERROR: "NO_ERROR",
+        SpecialVars.CHECK_INTERVAL: 1.0,
+        SpecialVars.STEP_INTERVAL: 0.1,
+        SpecialVars.CLP_STP_INTERVAL: 0.1,
+        SpecialVars.CLP_STEP_MODE: "PAUSE",
+        SpecialVars.STEP_MODE: "PAUSE",
     }
 
     def __init__(self):
@@ -89,49 +128,53 @@ class CstolVariables:
         Sets a special variable, which is a variable that starts with '$$'.
         Special variables are not stored in the local variables dictionary.
         """
-        if not name.startswith("$$"):
-            raise ValueError(f"Special variable names must start with '$$': {name}")
+        if not name.startswith(SPECIAL_VARIABLE_PREFIX):
+            raise ValueError(
+                f"Special variable names must start with '{SPECIAL_VARIABLE_PREFIX}': {name}"
+            )
         name = name.upper()
         self.special_variables[name] = value
         match name:
-            case "$$CLP_STP_INTERVAL":
+            case SpecialVars.CLP_STP_INTERVAL:
                 set_line_delay(value)
-                self.special_variables["$$STEP_INTERVAL"] = value
-            case "$$STEP_INTERVAL":
-                self.set_special_variable("$$CLP_STP_INTERVAL", value)
-            case "$$CLP_STEP_MODE":
+                self.special_variables[SpecialVars.STEP_INTERVAL] = value
+            case SpecialVars.STEP_INTERVAL:
+                self.set_special_variable(SpecialVars.CLP_STP_INTERVAL, value)
+            case SpecialVars.CLP_STEP_MODE:
                 mode = str(value).upper()
                 if mode == "GO":
                     run_mode()
                     set_line_delay(0)
                 elif mode == "PAUSE":
                     run_mode()
-                    set_line_delay(self.special_variables["$$STEP_INTERVAL"])
+                    set_line_delay(self.special_variables[SpecialVars.STEP_INTERVAL])
                 elif mode == "WAIT":
                     step_mode()
                 else:
                     raise ValueError(f"Invalid step mode: {mode}")
-                self.special_variables["$$STEP_MODE"] = value
-            case "$$STEP_MODE":
-                self.set_special_variable("$$CLP_STEP_MODE", value)
+                self.special_variables[SpecialVars.STEP_MODE] = value
+            case SpecialVars.STEP_MODE:
+                self.set_special_variable(SpecialVars.CLP_STEP_MODE, value)
 
     def get_special_variable(self, name):
         """
         Gets a special variable by name.
         Returns None if the variable does not exist.
         """
-        if not name.startswith("$$"):
-            raise ValueError(f"Special variable names must start with '$$': {name}")
+        if not name.startswith(SPECIAL_VARIABLE_PREFIX):
+            raise ValueError(
+                f"Special variable names must start with '{SPECIAL_VARIABLE_PREFIX}': {name}"
+            )
         name = name.upper()
         match name:
-            case "$$CURRENT_TIME":
+            case SpecialVars.CURRENT_TIME:
                 return datetime.datetime.now(datetime.UTC).timestamp()
-            case "$$SC_TIME":
+            case SpecialVars.SC_TIME:
                 return (
                     datetime.datetime.now(datetime.UTC).timestamp()
-                    + self.special_variables["$$OWLT"]
+                    + self.special_variables[SpecialVars.OWLT]
                 )
-            case "$$LOOP_COUNT":
+            case SpecialVars.LOOP_COUNT:
                 if len(self.loop_stack) > 0:
                     return self.loop_stack[-1][2]
                 else:
@@ -231,6 +274,51 @@ class CstolScriptEngine(ScriptEngine):
         self.variables = CstolVariables()
         self.saved_tokens = None
 
+    def timestamp_token_count(self, tokens, i):
+        """
+        Returns how many tokens starting at index i form a single timestamp, or None if
+        they do not. The tokenizer splits timestamps on '/' and '-', so
+        yyyy/doy-HH:MM:SS arrives as ["yyyy", "/", "doy", "-", "HH:MM:SS"].
+
+        Each form requires at least one token to follow the timestamp, matching the
+        original bounds checks.
+        """
+        remaining = len(tokens) - i
+
+        # yyyy/doy-HH:MM:SS
+        if (
+            remaining >= 5
+            and YEAR_PATTERN.match(tokens[i])
+            and tokens[i + 1] == "/"
+            and DAY_OF_YEAR_PATTERN.match(tokens[i + 2])
+            and tokens[i + 3] == "-"
+            and CLOCK_TIME_PATTERN.match(tokens[i + 4])
+        ):
+            return 5
+
+        # /doy-HH:MM:SS or yyyy/-HH:MM:SS
+        if (
+            remaining >= 4
+            and CLOCK_TIME_PATTERN.match(tokens[i + 3])
+            and (
+                (tokens[i] == "/" and DAY_OF_YEAR_PATTERN.match(tokens[i + 1]))
+                or (YEAR_PATTERN.match(tokens[i]) and tokens[i + 1] == "/")
+            )
+            and tokens[i + 2] == "-"
+        ):
+            return 4
+
+        # /-HH:MM:SS
+        if (
+            remaining >= 3
+            and tokens[i] == "/"
+            and tokens[i + 1] == "-"
+            and CLOCK_TIME_PATTERN.match(tokens[i + 2])
+        ):
+            return 3
+
+        return None
+
     def cstol_tokenizer(self, s, special_chars="()><+-*/=;,"):
         tokens = self.tokenizer(s, special_chars)
 
@@ -239,77 +327,28 @@ class CstolScriptEngine(ScriptEngine):
         reconstructed_tokens = []
         i = 0
         while i < len(tokens):
-            # Check if we have a potential timestamp pattern: yyyy/doy-HH:MM:SS
-            if (
-                i + 4 < len(tokens)
-                and re.match(r"^\d{4}$", tokens[i])
-                and tokens[i + 1] == "/"
-                and re.match(r"^\d{1,3}$", tokens[i + 2])
-                and tokens[i + 3] == "-"
-                and re.match(r"^\d{1,2}:\d{1,2}:\d{1,2}\.?\d*$", tokens[i + 4])
-            ):
-                # Reconstruct the full timestamp
-                timestamp = (
-                    tokens[i] + tokens[i + 1] + tokens[i + 2] + tokens[i + 3] + tokens[i + 4]
-                )
-                reconstructed_tokens.append(timestamp)
-                i += 5  # Skip the next 4 tokens since we combined them
+            timestamp_length = self.timestamp_token_count(tokens, i)
+            if timestamp_length:
+                reconstructed_tokens.append("".join(tokens[i : i + timestamp_length]))
+                i += timestamp_length
+                continue
 
-            # Check if we have a potential timestamp pattern: /doy-HH:MM:SS
-            elif (
-                i + 3 < len(tokens)
-                and tokens[i] == "/"
-                and re.match(r"^\d{1,3}$", tokens[i + 1])
-                and tokens[i + 2] == "-"
-                and re.match(r"^\d{1,2}:\d{1,2}:\d{1,2}\.?\d*$", tokens[i + 3])
-            ):
-                # Reconstruct the full timestamp
-                timestamp = tokens[i] + tokens[i + 1] + tokens[i + 2] + tokens[i + 3]
-                reconstructed_tokens.append(timestamp)
-                i += 4  # Skip the next 3 tokens since we combined them
+            # Recombine multi-part operator tokens
+            token = tokens[i]
+            if token in self.KNOWN_TOKENS and i + 1 < len(tokens):
+                next_token = tokens[i + 1]
+                if (
+                    (token == "*" and next_token == "*")
+                    or (token == "<" and next_token == "=")
+                    or (token == ">" and next_token == "=")
+                    or (token == "/" and next_token == "=")
+                ):
+                    reconstructed_tokens.append(token + next_token)
+                    i += 2  # Skip the next token
+                    continue
 
-            # Check if we have a potential timestamp pattern: yyyy/-HH:MM:SS
-            elif (
-                i + 3 < len(tokens)
-                and re.match(r"^\d{4}$", tokens[i])
-                and tokens[i + 1] == "/"
-                and tokens[i + 2] == "-"
-                and re.match(r"^\d{1,2}:\d{1,2}:\d{1,2}\.?\d*$", tokens[i + 3])
-            ):
-                # Reconstruct the full timestamp
-                timestamp = tokens[i] + tokens[i + 1] + tokens[i + 2] + tokens[i + 3]
-                reconstructed_tokens.append(timestamp)
-                i += 4  # Skip the next 3 tokens since we combined them
-
-            # Check if we have a potential timestamp pattern: yyyy/-HH:MM:SS
-            elif (
-                i + 2 < len(tokens)
-                and tokens[i] == "/"
-                and tokens[i + 1] == "-"
-                and re.match(r"^\d{1,2}:\d{1,2}:\d{1,2}\.?\d*$", tokens[i + 2])
-            ):
-                # Reconstruct the full timestamp
-                timestamp = tokens[i] + tokens[i + 1] + tokens[i + 2]
-                reconstructed_tokens.append(timestamp)
-                i += 3  # Skip the next 2 tokens since we combined them
-
-            else:
-                # Recombine multi-part operator tokens
-                token = tokens[i]
-                if token in self.KNOWN_TOKENS and i + 1 < len(tokens):
-                    next_token = tokens[i + 1]
-                    if (
-                        (token == "*" and next_token == "*")
-                        or (token == "<" and next_token == "=")
-                        or (token == ">" and next_token == "=")
-                        or (token == "/" and next_token == "=")
-                    ):
-                        reconstructed_tokens.append(token + next_token)
-                        i += 2  # Skip the next token
-                        continue
-
-                reconstructed_tokens.append(token)
-                i += 1
+            reconstructed_tokens.append(token)
+            i += 1
 
         return reconstructed_tokens
 
@@ -656,34 +695,43 @@ class CstolScriptEngine(ScriptEngine):
                     answer = answer.upper()
             self.variables.set_local_variable(variable, answer)
 
+    def parse_format(self, expr, keyword, line_no):
+        """
+        Splits a leading %<format> token off of expr. Returns the format specifier and
+        the remaining tokens, with a specifier of None when expr has no format token.
+        """
+        if expr[0][0] != "%":
+            return None, expr
+
+        format_spec = expr[0][1:].upper()
+        if format_spec not in INTEGER_FORMATS and format_spec not in FLOAT_FORMATS:
+            raise ValueError(
+                f"Invalid format %'{format_spec}' in {keyword} command at line {line_no}"
+            )
+        if len(expr) < 2:
+            raise ValueError(
+                f"Missing value for format %'{format_spec}' in {keyword} command at line {line_no}"
+            )
+        return format_spec, expr[1:]
+
+    def apply_format(self, format_spec, value):
+        """
+        Renders value using a CSTOL %<format> specifier, or str(value) when there is no
+        specifier. Integer formats convert the value to an integer first, float formats
+        convert it to a float.
+        """
+        if format_spec is None:
+            return str(value)
+        if format_spec in INTEGER_FORMATS:
+            return format(int(value), INTEGER_FORMATS[format_spec])
+        return format(float(value), FLOAT_FORMATS[format_spec])
+
     def handle_check(self, tokens, line_no):
         expressions = self.extract_expressions(tokens[1:], ",")
         for expr in expressions:
             if len(expr) == 0:
                 raise ValueError(f"Empty expression in CHECK command at line {line_no}")
-            format = None
-            if expr[0][0] == "%":
-                # Format string
-                # The %X, %O, %B, %I and %D formats convert the value to an
-                # integer prior to applying the format:
-                # %X or %x Output in hexadecimal values
-                # %O or %o Output in octal values
-                # %B or %b Output in binary values
-                # %I or %i Output in decimal values
-                # %D or %d Output in decimal values
-                # %F or %f Output in floating point values Default for integer or raw value
-                # %E or %e Output in floating point values Default for float or EU value
-                format = expr[0][1:].upper()
-                if format not in ["X", "O", "B", "I", "D", "F", "E"]:
-                    raise ValueError(
-                        f"Invalid format %'{format}' in CHECK command at line {line_no}"
-                    )
-                if len(expr) < 2:
-                    raise ValueError(
-                        f"Missing value for format %'{format}' in CHECK command at line {line_no}"
-                    )
-                # Remove format from the expression
-                expr = expr[1:]
+            format_spec, expr = self.parse_format(expr, "CHECK", line_no)
 
             # Check for VS
             success = True
@@ -721,27 +769,7 @@ class CstolScriptEngine(ScriptEngine):
                 source = " ".join(expr)
                 value = self.evaluate_expression(expr)
 
-            formatted_value = None
-            if format is None:
-                formatted_value = str(value)
-            elif format in ["X", "O", "B", "I", "D"]:
-                # Convert to integer
-                value = int(value)
-                if format == "X":
-                    formatted_value = f"{value:X}"
-                elif format == "O":
-                    formatted_value = f"{value:o}"
-                elif format == "B":
-                    formatted_value = f"{value:b}"
-                elif format in ["I", "D"]:
-                    formatted_value = str(value)
-            elif format in ["F", "E"]:
-                # Convert to float
-                value = float(value)
-                if format == "F":
-                    formatted_value = f"{value:.6f}"
-                elif format == "E":
-                    formatted_value = f"{value:.6e}"
+            formatted_value = self.apply_format(format_spec, value)
 
             if success:
                 print(f"CHECK SUCCESS: {source} = {formatted_value}")
@@ -816,6 +844,8 @@ class CstolScriptEngine(ScriptEngine):
                             f"TURN and FORCE must be followed by ON or OFF at line {line_no}"
                         )
             case "CMD":
+                # CMD is the explicit form of a command, so there is no implied
+                # verb to fold into the parameters below
                 pass
 
         # Now we need to discover any TO, BY, FROM, WITH clauses
@@ -892,7 +922,6 @@ class CstolScriptEngine(ScriptEngine):
             raise ValueError(
                 f"Expected '=' after variable name in DECLARE command at line {line_no}"
             )
-        # default_value = self.token_to_value(tokens[4])
         default_value = self.evaluate_tokens([tokens[4]])[0]
         self.variables.set_local_variable(variable_name, default_value)
 
@@ -934,7 +963,7 @@ class CstolScriptEngine(ScriptEngine):
                 next_line = lines[i].strip().upper()
                 if next_line.startswith("IF "):
                     depth += 1
-                elif next_line.startswith("ENDIF") or next_line.startswith("END IF"):
+                elif next_line.startswith(("ENDIF", "END IF")):
                     depth -= 1
                     if depth == 0:
                         return i + 1
@@ -953,25 +982,32 @@ class CstolScriptEngine(ScriptEngine):
         ):
             # END IF pops the IF stack
             self.variables.if_stack.pop()
-            pass
         elif (len(tokens) == 1 and tokens[0].upper() == "ENDLOOP") or (
             tokens[0].upper() == "END" and tokens[1].upper() == "LOOP"
         ):
-            if len(self.variables.loop_stack) > 0:
-                loop_info = self.variables.loop_stack[-1]
-                loop_info[2] += 1
-                if loop_info[1] is not None:
-                    # Counted loop, decrement the count
-                    loop_info[1] -= 1
-                    if loop_info[1] > 0:
-                        return loop_info[0]
-                    else:
-                        self.variables.loop_stack.pop()
-                        return line_no + 1  # Continue to the next line
-                else:
-                    # Infinite loop, just continue to the start of the loop
-                    return loop_info[0]
+            return self.handle_end_loop(line_no)
         return line_no + 1
+
+    def handle_end_loop(self, line_no):
+        """
+        Advances the innermost loop when its ENDLOOP is reached. Returns the top of the
+        loop while iterations remain, otherwise the line after the ENDLOOP.
+        """
+        if len(self.variables.loop_stack) == 0:
+            return line_no + 1
+
+        loop_info = self.variables.loop_stack[-1]
+        loop_info[2] += 1
+        if loop_info[1] is None:
+            # Infinite loop, just continue to the start of the loop
+            return loop_info[0]
+
+        # Counted loop, decrement the count
+        loop_info[1] -= 1
+        if loop_info[1] > 0:
+            return loop_info[0]
+        self.variables.loop_stack.pop()
+        return line_no + 1  # Continue to the next line
 
     def handle_escape(self, _tokens, lines, line_no):
         # Find the matching ENDLOOP
@@ -1038,19 +1074,16 @@ class CstolScriptEngine(ScriptEngine):
                 next_line = lines[i].strip().upper()
                 if next_line.startswith("IF "):
                     depth += 1
-                elif next_line.startswith("ENDIF") or next_line.startswith("END IF"):
+                elif next_line.startswith(("ENDIF", "END IF")):
                     depth -= 1
                     if depth == 0:
                         return i + 1
-                elif next_line.startswith("ELSE"):
-                    if next_line.startswith("ELSEIF") or next_line.startswith("ELSE IF"):
+                elif next_line.startswith("ELSE") and depth == 1:
+                    if next_line.startswith(("ELSEIF", "ELSE IF")):
                         # Continue to the ELSE IF
-                        if depth == 1:
-                            return i + 1
-                    else:
-                        # Regular ELSE - Continue to line after
-                        if depth == 1:
-                            return i + 2
+                        return i + 1
+                    # Regular ELSE - Continue to line after
+                    return i + 2
 
         raise ValueError(f"No matching ENDIF or ELSE found for IF command at line {line_no}")
 
@@ -1109,9 +1142,9 @@ class CstolScriptEngine(ScriptEngine):
             raise ValueError(f"Invalid LOAD command format at line {line_no}")
         location = expressions[0]
         filename = expressions[1]
+        # The evaluated location is unused, COSMOS sends the whole file to the interface
         results = self.evaluate_expressions([interface_name, location, filename])
         interface_name = results[0]
-        location = results[1]
         filename = results[2]
         file = get_target_file(filename)
         data = file.read()
@@ -1145,9 +1178,8 @@ class CstolScriptEngine(ScriptEngine):
                     )
 
     def handle_return(self, tokens, lines, line_no):
-        if len(tokens) > 1:
-            if tokens[1].upper() == "ALL":
-                raise StopScriptError
+        if len(tokens) > 1 and tokens[1].upper() == "ALL":
+            raise StopScriptError
         return len(lines) + 1
 
     def handle_run(self, tokens, line_no):
@@ -1237,26 +1269,26 @@ class CstolScriptEngine(ScriptEngine):
                     result = wait_expression(
                         python_expression,
                         seconds,
-                        self.variables.get_special_variable("$$CHECK_INTERVAL"),
+                        self.variables.get_special_variable(SpecialVars.CHECK_INTERVAL),
                         globals={"math": math, "os": os, "tlm": tlm},
                     )
                     if result:
-                        self.variables.set_special_variable("$$ERROR", "NO_ERROR")
+                        self.variables.set_special_variable(SpecialVars.ERROR, "NO_ERROR")
                     else:
-                        self.variables.set_special_variable("$$ERROR", "TIME_OUT")
+                        self.variables.set_special_variable(SpecialVars.ERROR, "TIME_OUT")
                 else:
                     raise ValueError(f"Invalid timestamp format at line {line_no}")
             else:
                 result = wait_expression(
                     python_expression,
                     1000000000,
-                    self.variables.get_special_variable("$$CHECK_INTERVAL"),
+                    self.variables.get_special_variable(SpecialVars.CHECK_INTERVAL),
                     globals={"math": math, "os": os, "tlm": tlm},
                 )  # Effective infinite wait
                 if result:
-                    self.variables.set_special_variable("$$ERROR", "NO_ERROR")
+                    self.variables.set_special_variable(SpecialVars.ERROR, "NO_ERROR")
                 else:
-                    self.variables.set_special_variable("$$ERROR", "TIME_OUT")
+                    self.variables.set_special_variable(SpecialVars.ERROR, "TIME_OUT")
 
     def handle_write(self, tokens, line_no):
         expressions = self.extract_expressions(tokens[1:], ",")
@@ -1264,49 +1296,8 @@ class CstolScriptEngine(ScriptEngine):
         for expr in expressions:
             if len(expr) == 0:
                 raise ValueError(f"Empty expression in WRITE command at line {line_no}")
-            result = ""
-            if expr[0][0] == "%":
-                # Format string
-                # The %X, %O, %B, %I and %D formats convert the value to an
-                # integer prior to applying the format:
-                # %X or %x Output in hexadecimal values
-                # %O or %o Output in octal values
-                # %B or %b Output in binary values
-                # %I or %i Output in decimal values
-                # %D or %d Output in decimal values
-                # %F or %f Output in floating point values Default for integer or raw value
-                # %E or %e Output in floating point values Default for float or EU value
-                format = expr[0][1:].upper()
-                if format not in ["X", "O", "B", "I", "D", "F", "E"]:
-                    raise ValueError(
-                        f"Invalid format %'{format}' in WRITE command at line {line_no}"
-                    )
-                if len(expr) < 2:
-                    raise ValueError(
-                        f"Missing value for format %'{format}' in WRITE command at line {line_no}"
-                    )
-                value = self.evaluate_expression(expr[1:])
-                if format in ["X", "O", "B", "I", "D"]:
-                    # Convert to integer
-                    value = int(value)
-                    if format == "X":
-                        result = f"{value:X}"
-                    elif format == "O":
-                        result = f"{value:o}"
-                    elif format == "B":
-                        result = f"{value:b}"
-                    elif format in ["I", "D"]:
-                        result = str(value)
-                elif format in ["F", "E"]:
-                    # Convert to float
-                    value = float(value)
-                    if format == "F":
-                        result = f"{value:.6f}"
-                    elif format == "E":
-                        result = f"{value:.6e}"
-            else:
-                result = str(self.evaluate_expression(expr))
-            results.append(result)
+            format_spec, expr = self.parse_format(expr, "WRITE", line_no)
+            results.append(self.apply_format(format_spec, self.evaluate_expression(expr)))
         # Join the results with spaces
         output = " ".join(results)
         print(output)
@@ -1356,6 +1347,7 @@ class CstolScriptEngine(ScriptEngine):
                 case "ASK":
                     self.handle_ask(tokens, line_no)
                 case "BEGIN":
+                    # BEGIN only marks the start of the procedure body
                     pass
                 case (
                     "CANCEL"
