@@ -1477,6 +1477,15 @@ class TestCstolScriptEngine:
         assert self.engine.evaluate_expression(["O#17"]) == 15
         assert self.engine.evaluate_expression(["X#10", "+", "B#10"]) == 18
 
+    def test_write_hex_radix_addition_end_to_end(self):
+        # Regression: WRITE lines with lowercase x# hex operands containing A-F
+        # were emitted as quoted strings and concatenated instead of added
+        tokens = self.engine.cstol_tokenizer("WRITE x#00000011 + x#22000000")
+        assert self.engine.evaluate_expression(tokens[1:]) == 570425361
+
+        tokens = self.engine.cstol_tokenizer("WRITE x#DEAD0000 + x#0000BEEF")
+        assert self.engine.evaluate_expression(tokens[1:]) == 0xDEADBEEF
+
     def test_build_python_expression_invalid_radix_digits(self):
         # Digits outside the base must raise rather than emit invalid syntax
         with pytest.raises(ValueError):
