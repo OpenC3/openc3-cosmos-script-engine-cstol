@@ -1,5 +1,6 @@
 tools/*
 .DS_Store
+.DS_STORE
 node_modules
 /dist
 
@@ -14,12 +15,22 @@ yarn-error.log*
 pnpm-debug.log*
 
 # Editor directories and files
-.coverage
 .idea
 .vscode
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
+*.sw?
+
+# Gems
 *.gem
+
+# Python / uv
+.venv
+__pycache__
 *.pyc
+.pytest_cache
+.ruff_cache
+.coverage
+htmlcov

@@ -26,7 +26,8 @@ spec = Gem::Specification.new do |s|
   end
   s.licenses = ['Nonstandard']
 
-  s.files = Dir.glob("{targets,lib,procedures,tools,microservices,public}/**/*") + %w(Rakefile LICENSE.txt README.md plugin.txt)
+  s.files = Dir.glob("{targets,lib,procedures,tools,microservices,public}/**/*").reject { |f| f.include?('__pycache__') } +
+            %w(Rakefile LICENSE.txt README.md plugin.txt pyproject.toml uv.lock)
   s.metadata = {
     "source_code_uri" => "https://github.com/OpenC3/openc3-cosmos-script-engine-cstol",
     "openc3_store_title" => "CSTOL Script Engine",

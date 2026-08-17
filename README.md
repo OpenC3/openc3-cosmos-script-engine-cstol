@@ -165,20 +165,112 @@ The following CSTOL keywords are not supported and will simply print a warning:
 
 1.  At the Administrator Console - Plugins, upload the openc3-cosmos-script-engine-cstol.gem file
 
-## Testing
+## Development
 
-### Run tests with coverage
+This project uses:
 
-source test_env/bin/activate
-python -m pytest
+- **uv** for dependency management and locking
+- **pytest** for testing
+- **ruff** for linting and formatting
+- **ty** for static type checking
+- **just** for task automation
 
-### Generate detailed terminal report
+All Python tooling is configured in `pyproject.toml`, and dependency versions are
+pinned in `uv.lock`. Install the development environment with:
 
-python -m pytest --cov=lib --cov-report=term-missing
+```bash
+uv sync --group dev
+```
 
-### Generate HTML report
+Note that `openc3` is a development-only dependency. At runtime COSMOS provides it,
+so the plugin declares no runtime dependencies of its own.
 
-python -m pytest --cov=lib --cov-report=html
+### Quick Start with Just
+
+This project uses [just](https://github.com/casey/just) as a command runner. To see
+all available commands:
+
+```bash
+just --list
+```
+
+Common commands:
+
+```bash
+# Run all checks (lint, format check, type check, tests)
+just check
+
+# Run tests
+just test
+
+# Run tests with coverage
+just test-cov
+
+# Generate an HTML coverage report in htmlcov/
+just coverage-html
+
+# Lint, and auto-fix what can be fixed
+just lint
+just lint-fix
+
+# Format, or check formatting without writing
+just format
+just format-check
+
+# Type check with ty
+just typecheck
+
+# Remove build, cache, and coverage artifacts
+just clean
+```
+
+### Manual Commands
+
+If you prefer to invoke the tools directly with uv:
+
+```bash
+uv run --group dev pytest                                              # tests + coverage
+uv run --group dev pytest test/ -v --cov=lib --cov-report=term-missing # detailed report
+uv run --group dev pytest test/ --cov=lib --cov-report=html            # HTML report
+uv run --group dev ruff check .                                        # lint
+uv run --group dev ruff format .                                       # format
+uv run --group dev ty check --exit-zero-on-warning lib/ test/          # type check
+```
+
+Coverage settings, including the 80% minimum, live in `pyproject.toml` and apply to
+every one of these invocations.
+
+## Versioning and Building the Gem
+
+The plugin version is defined in one place, the `version` field of `pyproject.toml`:
+
+```toml
+[project]
+name = "openc3-cosmos-script-engine-cstol-python"
+version = "1.2.0"
+```
+
+The gemspec does not hardcode a version. It reads the `VERSION` environment variable,
+and `just build-gem` supplies that value by reading it out of `pyproject.toml`. So
+bumping the version in `pyproject.toml` is what changes the version of the built gem:
+
+```bash
+# Builds openc3-cosmos-script-engine-cstol-<pyproject version>.gem
+just build-gem
+```
+
+To override the version for a one-off build, pass it explicitly:
+
+```bash
+just build-gem 1.3.0
+```
+
+For a throwaway build, `just build-gem-dev` appends a `-dev.<timestamp>` suffix to the
+`pyproject.toml` version, which keeps prerelease gems from colliding. RubyGems
+normalizes that into a prerelease version, so `1.2.0` builds as
+`openc3-cosmos-script-engine-cstol-1.2.0.pre.dev.<timestamp>.gem`.
+
+Both `pyproject.toml` and `uv.lock` are packaged into the gem.
 
 ## Contributing
 
