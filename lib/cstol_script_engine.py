@@ -123,6 +123,14 @@ class CstolVariables:
         """
         return self.local_variables.get(name.upper(), None)
 
+    def has_local_variable(self, name):
+        """
+        Returns True if the local variable has been set (case insensitive).
+        Note this is different from get_local_variable returning None because
+        a variable can be legitimately set to None.
+        """
+        return name.upper() in self.local_variables
+
     def set_special_variable(self, name, value):
         """
         Sets a special variable, which is a variable that starts with '$$'.
@@ -923,6 +931,10 @@ class CstolScriptEngine(ScriptEngine):
                 f"Expected '=' after variable name in DECLARE command at line {line_no}"
             )
         default_value = self.evaluate_tokens([tokens[4]])[0]
+        if mode == "INPUT" and self.variables.has_local_variable(variable_name):
+            # INPUT variables are passed in by the PROC argument list, so the
+            # default value is only applied when an argument wasn't given
+            return
         self.variables.set_local_variable(variable_name, default_value)
 
     def handle_display(self, tokens, line_no):
@@ -1170,12 +1182,41 @@ class CstolScriptEngine(ScriptEngine):
                 if token == ",":
                     continue
                 elif token.startswith("$"):
-                    self.variables.set_local_variable(token, os.getenv(f"CSTOL_ARG_{index}"))
+                    value = os.getenv(f"CSTOL_ARG_{index}")
+                    if value is not None:
+                        # START stores the type alongside the value so the local
+                        # variable gets the type the caller passed rather than a string
+                        value = self.convert_arg(value, os.getenv(f"CSTOL_ARG_{index}_TYPE"))
+                        self.variables.set_local_variable(token, value)
                     index += 1
                 else:
                     raise ValueError(
                         f"Invalid variable '{token}' in PROC command at line {line_no}"
                     )
+
+    @staticmethod
+    def convert_arg(value, type_name):
+        """
+        Converts a CSTOL_ARG environment variable string back into the type it
+        had when START was called. Returns the string unchanged if the type is
+        unknown or the value can't be converted.
+        """
+        try:
+            match type_name:
+                case "int":
+                    return int(value)
+                case "float":
+                    return float(value)
+                case "complex":
+                    return complex(value)
+                case "bool":
+                    return value == "True"
+                case "NoneType":
+                    return None
+                case _:
+                    return value
+        except ValueError:
+            return value
 
     def handle_return(self, tokens, lines, line_no):
         if len(tokens) > 1 and tokens[1].upper() == "ALL":
@@ -1216,15 +1257,14 @@ class CstolScriptEngine(ScriptEngine):
             # Remove quotes
             proc_name = proc_name[1:-1]
 
-        args = []
         if len(tokens) > 2:
             # Handle argument list
             expressions = self.extract_expressions(tokens[2:], ",")
             results = self.evaluate_expressions(expressions)
-            args = [str(result) for result in results]
-            for index, arg in enumerate(args):
-                # Set the environment variable for the argument
-                os.environ[f"CSTOL_ARG_{index}"] = arg
+            for index, result in enumerate(results):
+                # Set the environment variables for the argument and its type
+                os.environ[f"CSTOL_ARG_{index}"] = str(result)
+                os.environ[f"CSTOL_ARG_{index}_TYPE"] = type(result).__name__
         start(proc_name, bind_variables=False)
 
     def handle_switch(self, tokens, line_no):

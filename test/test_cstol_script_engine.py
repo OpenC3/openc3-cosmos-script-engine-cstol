@@ -21,6 +21,7 @@
 # CSTOL language originally developed by the University of Colorado / LASP.
 
 import datetime
+import os
 import unittest.mock as mock
 from unittest.mock import MagicMock
 
@@ -120,6 +121,23 @@ class TestCstolScriptEngine:
         assert result == 1735734896.0
 
     def test_handle_declare_variable(self):
+        tokens = ["DECLARE", "VARIABLE", "$TEST", "=", "42"]
+        self.engine.handle_declare(tokens, 1)
+        assert self.engine.variables.local_variables["$TEST"] == 42
+
+    def test_handle_declare_input_uses_default_when_unset(self):
+        tokens = ["DECLARE", "INPUT", "$TEST", "=", "42"]
+        self.engine.handle_declare(tokens, 1)
+        assert self.engine.variables.local_variables["$TEST"] == 42
+
+    def test_handle_declare_input_does_not_overwrite_existing(self):
+        self.engine.variables.set_local_variable("$TEST", 7)
+        tokens = ["DECLARE", "INPUT", "$TEST", "=", "42"]
+        self.engine.handle_declare(tokens, 1)
+        assert self.engine.variables.local_variables["$TEST"] == 7
+
+    def test_handle_declare_variable_overwrites_existing(self):
+        self.engine.variables.set_local_variable("$TEST", 7)
         tokens = ["DECLARE", "VARIABLE", "$TEST", "=", "42"]
         self.engine.handle_declare(tokens, 1)
         assert self.engine.variables.local_variables["$TEST"] == 42
@@ -478,6 +496,28 @@ class TestCstolScriptEngine:
             self.engine.handle_start(tokens, 1)
             mock_start.assert_called_once_with("PROC1", bind_variables=False)
 
+    @mock.patch("cstol_script_engine.start")
+    def test_handle_start_sets_argument_types(self, mock_start):
+        tokens = ["START", "PROC1", "1", ",", "2.5", ",", "'HELLO'"]
+        with mock.patch.dict("os.environ", {}, clear=True):
+            self.engine.handle_start(tokens, 1)
+            assert os.environ["CSTOL_ARG_0"] == "1"
+            assert os.environ["CSTOL_ARG_0_TYPE"] == "int"
+            assert os.environ["CSTOL_ARG_1"] == "2.5"
+            assert os.environ["CSTOL_ARG_1_TYPE"] == "float"
+            assert os.environ["CSTOL_ARG_2"] == "HELLO"
+            assert os.environ["CSTOL_ARG_2_TYPE"] == "str"
+        mock_start.assert_called_once_with("PROC1", bind_variables=False)
+
+    @mock.patch("cstol_script_engine.start")
+    def test_start_proc_round_trips_argument_types(self, mock_start):
+        # START stores the args, PROC reads them back with their original types
+        with mock.patch.dict("os.environ", {}, clear=True):
+            self.engine.handle_start(["START", "PROC1", "42", ",", "2.5"], 1)
+            self.engine.handle_proc(["PROC", "PROC1", "$COUNT", ",", "$RATE"], 1)
+        assert self.engine.variables.local_variables["$COUNT"] == 42
+        assert self.engine.variables.local_variables["$RATE"] == 2.5
+
     def test_handle_proc_simple(self):
         tokens = ["PROC", "TEST_PROC"]
         self.engine.handle_proc(tokens, 1)
@@ -494,6 +534,58 @@ class TestCstolScriptEngine:
         tokens = ["PROC", "TEST_PROC", "VAR1"]
         with pytest.raises(ValueError, match="Invalid variable"):
             self.engine.handle_proc(tokens, 1)
+
+    def test_handle_proc_restores_argument_types(self):
+        tokens = ["PROC", "TEST_PROC", "$INT", ",", "$FLOAT", ",", "$BOOL", ",", "$STR"]
+        env = {
+            "CSTOL_ARG_0": "42",
+            "CSTOL_ARG_0_TYPE": "int",
+            "CSTOL_ARG_1": "1.5",
+            "CSTOL_ARG_1_TYPE": "float",
+            "CSTOL_ARG_2": "False",
+            "CSTOL_ARG_2_TYPE": "bool",
+            "CSTOL_ARG_3": "HELLO",
+            "CSTOL_ARG_3_TYPE": "str",
+        }
+        with mock.patch.dict("os.environ", env, clear=True):
+            self.engine.handle_proc(tokens, 1)
+        assert self.engine.variables.local_variables["$INT"] == 42
+        assert self.engine.variables.local_variables["$FLOAT"] == 1.5
+        assert self.engine.variables.local_variables["$BOOL"] is False
+        assert self.engine.variables.local_variables["$STR"] == "HELLO"
+
+    def test_handle_proc_unknown_type_stays_a_string(self):
+        tokens = ["PROC", "TEST_PROC", "$VAR1"]
+        env = {"CSTOL_ARG_0": "5", "CSTOL_ARG_0_TYPE": "something_else"}
+        with mock.patch.dict("os.environ", env, clear=True):
+            self.engine.handle_proc(tokens, 1)
+        assert self.engine.variables.local_variables["$VAR1"] == "5"
+
+    def test_handle_proc_unconvertible_value_stays_a_string(self):
+        tokens = ["PROC", "TEST_PROC", "$VAR1"]
+        env = {"CSTOL_ARG_0": "NOT_A_NUMBER", "CSTOL_ARG_0_TYPE": "int"}
+        with mock.patch.dict("os.environ", env, clear=True):
+            self.engine.handle_proc(tokens, 1)
+        assert self.engine.variables.local_variables["$VAR1"] == "NOT_A_NUMBER"
+
+    def test_handle_proc_restores_complex_and_none(self):
+        tokens = ["PROC", "TEST_PROC", "$COMPLEX", ",", "$NONE"]
+        env = {
+            "CSTOL_ARG_0": "(1+2j)",
+            "CSTOL_ARG_0_TYPE": "complex",
+            "CSTOL_ARG_1": "None",
+            "CSTOL_ARG_1_TYPE": "NoneType",
+        }
+        with mock.patch.dict("os.environ", env, clear=True):
+            self.engine.handle_proc(tokens, 1)
+        assert self.engine.variables.local_variables["$COMPLEX"] == complex(1, 2)
+        assert self.engine.variables.local_variables["$NONE"] is None
+
+    def test_handle_proc_missing_argument_leaves_variable_unset(self):
+        tokens = ["PROC", "TEST_PROC", "$VAR1"]
+        with mock.patch.dict("os.environ", {}, clear=True):
+            self.engine.handle_proc(tokens, 1)
+        assert not self.engine.variables.has_local_variable("$VAR1")
 
     @mock.patch("cstol_script_engine.cmd")
     def test_handle_cmd_simple(self, mock_cmd):
