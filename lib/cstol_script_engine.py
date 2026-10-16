@@ -776,6 +776,10 @@ class CstolScriptEngine(ScriptEngine):
                 # No VS - Just a print check
                 source = " ".join(expr)
                 value = self.evaluate_expression(expr)
+                # Relational/logical expressions evaluate to a bool and must be True
+                if value is False:
+                    success = False
+                    fail_message = "expression is false"
 
             formatted_value = self.apply_format(format_spec, value)
 
