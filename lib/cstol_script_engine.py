@@ -773,9 +773,13 @@ class CstolScriptEngine(ScriptEngine):
                         success = False
                         fail_message = f"not equal to {vs_value}"
             else:
-                # No VS - Just a print check
+                # No VS but could be a relational or logical expression
                 source = " ".join(expr)
                 value = self.evaluate_expression(expr)
+                # Relational/logical expressions evaluate to a bool and must be True
+                if value is False:
+                    success = False
+                    fail_message = "expression is false"
 
             formatted_value = self.apply_format(format_spec, value)
 

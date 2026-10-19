@@ -355,6 +355,21 @@ class TestCstolScriptEngine:
             self.engine.handle_check(tokens, 1)
             mock_print.assert_called_once_with("CHECK SUCCESS: 42 = 42")
 
+    def test_handle_check_boolean_expression_failure(self):
+        from openc3.script.exceptions import CheckError
+
+        with mock.patch("builtins.print") as mock_print:
+            with pytest.raises(CheckError):
+                self.engine.run_line("CHECK 483 > 483", [], "test.txt", 1)
+            mock_print.assert_called_once_with(
+                "CHECK FAILED: 483 > 483 = False (expression is false)"
+            )
+
+    def test_handle_check_boolean_expression_success(self):
+        with mock.patch("builtins.print") as mock_print:
+            self.engine.run_line("CHECK 484 > 483", [], "test.txt", 1)
+            mock_print.assert_called_once_with("CHECK SUCCESS: 484 > 483 = True")
+
     def test_handle_check_vs_equal_success(self):
         tokens = ["CHECK", "42", "VS", "42"]
         with mock.patch("builtins.print") as mock_print:
