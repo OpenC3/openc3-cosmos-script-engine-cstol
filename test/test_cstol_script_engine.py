@@ -125,6 +125,27 @@ class TestCstolScriptEngine:
         self.engine.handle_declare(tokens, 1)
         assert self.engine.variables.local_variables["$TEST"] == 42
 
+    @pytest.mark.parametrize("mode", ["VARIABLE", "INPUT", "CONSTANT"])
+    @pytest.mark.parametrize(
+        ("default", "expected"),
+        [("-0.54", -0.54), ("-42", -42), ("-.54", -0.54), ("+0.54", 0.54), ("+42", 42)],
+    )
+    def test_run_line_declare_signed_default(self, mode, default, expected):
+        self.engine.run_line(f"DECLARE {mode} $C5 = {default}", [], "test.prc", 1)
+        assert self.engine.variables.get_local_variable("$C5") == expected
+
+    @pytest.mark.parametrize("default", ["42", "-42", "+42"])
+    def test_run_line_declare_ignores_range(self, default):
+        self.engine.run_line(
+            f"DECLARE VARIABLE $TEST = {default} RANGE -100 : 100", [], "test.prc", 1
+        )
+        assert self.engine.variables.get_local_variable("$TEST") == int(default)
+
+    def test_run_line_declare_negative_default_write(self, capsys):
+        self.engine.run_line("DECLARE VARIABLE $C5 = -0.54", [], "test.prc", 1)
+        self.engine.run_line('WRITE "C5=" , $C5', [], "test.prc", 2)
+        assert capsys.readouterr().out == "C5= -0.54\n"
+
     def test_handle_declare_input_uses_default_when_unset(self):
         tokens = ["DECLARE", "INPUT", "$TEST", "=", "42"]
         self.engine.handle_declare(tokens, 1)
