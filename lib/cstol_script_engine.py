@@ -935,7 +935,11 @@ class CstolScriptEngine(ScriptEngine):
                 f"Expected '=' after variable name in DECLARE command at line {line_no}"
             )
         default_end = 6 if tokens[4] in ("+", "-") else 5
-        default_value = self.evaluate_expression(tokens[4:default_end])
+        default_tokens = tokens[4:default_end]
+        scientific_default = "".join(tokens[4 : default_end + 2])
+        if re.fullmatch(r"[+-]?\d*\.?\d+[eE][+-]\d+(?:[A-Za-z]+)?", scientific_default):
+            default_tokens = [scientific_default]
+        default_value = self.evaluate_expression(default_tokens)
         if mode == "INPUT" and self.variables.has_local_variable(variable_name):
             # INPUT variables are passed in by the PROC argument list, so the
             # default value is only applied when an argument wasn't given

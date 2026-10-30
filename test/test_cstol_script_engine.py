@@ -134,6 +134,25 @@ class TestCstolScriptEngine:
         self.engine.run_line(f"DECLARE {mode} $C5 = {default}", [], "test.prc", 1)
         assert self.engine.variables.get_local_variable("$C5") == expected
 
+    @pytest.mark.parametrize("mode", ["VARIABLE", "INPUT", "CONSTANT"])
+    @pytest.mark.parametrize("suffix", ["", " RANGE -10000 : 10000"])
+    @pytest.mark.parametrize(
+        ("default", "expected"),
+        [
+            ("1e-3", 0.001),
+            ("1e+3", 1000),
+            ("-1e-3", -0.001),
+            ("-1e+3", -1000),
+            ("+1e-3", 0.001),
+            ("+1e+3", 1000),
+            ("-1.5E-3", -0.0015),
+            ("+.5E+3", 500),
+        ],
+    )
+    def test_run_line_declare_scientific_default(self, mode, suffix, default, expected):
+        self.engine.run_line(f"DECLARE {mode} $TEST = {default}{suffix}", [], "test.prc", 1)
+        assert self.engine.variables.get_local_variable("$TEST") == expected
+
     @pytest.mark.parametrize("default", ["42", "-42", "+42"])
     def test_run_line_declare_ignores_range(self, default):
         self.engine.run_line(
