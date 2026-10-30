@@ -147,11 +147,23 @@ class TestCstolScriptEngine:
             ("+1e+3", 1000),
             ("-1.5E-3", -0.0015),
             ("+.5E+3", 500),
+            ("1.e-3", 0.001),
+            ("1.e+3", 1000),
+            ("-1.e-3", -0.001),
+            ("+1.E+3", 1000),
+            ("-1.e3", -1000),
         ],
     )
     def test_run_line_declare_scientific_default(self, mode, suffix, default, expected):
         self.engine.run_line(f"DECLARE {mode} $TEST = {default}{suffix}", [], "test.prc", 1)
         assert self.engine.variables.get_local_variable("$TEST") == expected
+
+    @pytest.mark.parametrize(
+        ("token", "expected"),
+        [("1.e-3", 0.001), ("-1.e+3", -1000), ("+1.E3DN", 1000), ("1.", 1.0)],
+    )
+    def test_evaluate_expression_trailing_dot_mantissa(self, token, expected):
+        assert self.engine.evaluate_expression([token]) == expected
 
     @pytest.mark.parametrize("default", ["42", "-42", "+42"])
     def test_run_line_declare_ignores_range(self, default):
