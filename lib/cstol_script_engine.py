@@ -450,10 +450,10 @@ class CstolScriptEngine(ScriptEngine):
             # Use regex to extract the numeric part (including scientific notation)
             # This pattern matches:
             # - Optional sign (+/-)
-            # - Digits, optional decimal point and more digits
+            # - Digits with an optional decimal point, or a leading-dot fraction
             # - Optional scientific notation (e/E followed by optional sign and digits)
             # - Ignores any alphabetic characters that follow
-            matches = re.match(r"^([+-]?\d*\.?\d+(?:[eE][+-]?\d+)?)", token)
+            matches = re.match(r"^([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)", token)
             if matches is not None:
                 final_tokens.append(str(matches.group(1)))
                 previous_number = True
@@ -934,7 +934,14 @@ class CstolScriptEngine(ScriptEngine):
             raise ValueError(
                 f"Expected '=' after variable name in DECLARE command at line {line_no}"
             )
-        default_value = self.evaluate_tokens([tokens[4]])[0]
+        default_end = 6 if tokens[4] in ("+", "-") else 5
+        default_tokens = tokens[4:default_end]
+        scientific_default = "".join(tokens[4 : default_end + 2])
+        if re.fullmatch(
+            r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)[eE][+-]\d+(?:[A-Za-z]+)?", scientific_default
+        ):
+            default_tokens = [scientific_default]
+        default_value = self.evaluate_expression(default_tokens)
         if mode == "INPUT" and self.variables.has_local_variable(variable_name):
             # INPUT variables are passed in by the PROC argument list, so the
             # default value is only applied when an argument wasn't given
